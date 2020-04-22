@@ -13,7 +13,7 @@ import socket
 
 import subprocess
 import fcntl
-import collections
+
 
 @contextlib.contextmanager
 def terminal_config():
@@ -44,10 +44,9 @@ def terminal_config():
         os.write(sys.stdout.fileno(), b'\x1b[?1049l')
 
 
-# os.write(1, b'\x1b[6n')
-
 def invert_colors(msg):
     return b'\x1b[7m' + msg + b'\x1b[0m'
+
 
 MASTER_CMD = [
     os.path.join(os.path.expanduser("~/go/bin"), "determined-master"),
@@ -60,10 +59,11 @@ MASTER_CMD = [
     "--root", os.path.expanduser("~/code/determined/build/share/determined/master"),
 ]
 
+
 AGENT_CMD = [
     os.path.join(os.path.expanduser("~/go/bin"), "determined-agent"),
-    "--master_host", "192.168.0.4",
-    "--master_port", "8080",
+    "--master-host", "192.168.0.4",
+    "--master-port", "8080",
     "run"
 ]
 
@@ -100,6 +100,9 @@ class States(enum.Enum):
     def __lt__(self, other):
         return self.get_index() < other.get_index()
 
+    def __rlt__(self, other):
+        return self.get_index() < other.get_index()
+
     @staticmethod
     def from_index(index):
         return (
@@ -133,145 +136,6 @@ def nonblock(fd):
     flags = fcntl.fcntl(fd, fcntl.F_GETFL)
     fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
 
-class AtomicOperation:
-    """
-    Only have one atomic operation in flight at a time.  You must wait for it to finish but you may
-    request it ends early if you know you will ignore its output.
-
-    An example would be a connector which is trying to connect to the master binary, except if the
-    master binary has already exited, we will want to exit the connector.
-    """
-
-    @abc.abstractmethod
-    def __str__(self):
-        """Return a one-word summary of what the operation is"""
-        pass
-
-    @abc.abstractmethod
-    def cancel(self):
-        pass
-
-    @abc.abstractmethod
-    def join(self):
-        pass
-
-class Process:
-    """
-    A long-running process may have precommands to run first and postcommands before it is ready.
-    """
-
-    @abc.abstractmethod
-    def get_precommand(self):
-        """Return the next AtomicOperation or None, at which point it is safe to run_command)."""
-        pass
-
-    @abc.abstractmethod
-    def get_postcommand(self):
-        """Return the next AtomicOperation or None, at which point the command is up."""
-        pass
-
-    @abc.abstractmethod
-    def run_command(self):
-        """Start the long-running process."""
-        pass
-
-    @abc.abstractmethod
-    def running(self):
-        """Is the long-running process still un-waited?"""
-        pass
-
-    @abc.abstractmethod
-    def kill(self):
-        """Kill the long-running process (atomic operations must be canceled normally)."""
-        pass
-
-class Master(Process):
-    def __init__(self, poll, log, pipe_wr, set_target, next_thing):
-        self.proc = None
-        self.out = None
-        self.err = None
-        self.dying = False
-
-        self.poll = poll
-        self.pipe_wr = pipe_wr
-        self.log = log
-        self.next_thing = next_thing
-        self.set_target = set_target
-
-        self._reset()
-
-    def _reset(self):
-        self.postcommands_run = 0
-
-    def _maybe_wait(self):
-        """wait() on master if both stdout and stderr are empty."""
-        if not self.dying:
-            self.log(f"master closing unexpectedly!\n")
-            self.set_target(States.DEAD)
-
-        if self.out is None and self.err is None:
-            ret = self.proc.wait()
-            self.log(f"master exited with {ret}\n")
-            self.log(f"NDET: master exited with {ret}\n", "master")
-            self.proc = None
-            self._reset()
-            self.next_thing()
-
-    def _handle_out(self, ev):
-        if ev & Poll.IN_FLAGS:
-            self.log(os.read(self.out, 4096), "master")
-        if ev & Poll.ERR_FLAGS:
-            self.poll.unregister(self._handle_out)
-            os.close(self.out)
-            self.out = None
-            self._maybe_wait()
-
-    def _handle_err(self, ev):
-        if ev & Poll.IN_FLAGS:
-            self.log(os.read(self.err, 4096), "master")
-        if ev & Poll.ERR_FLAGS:
-            self.poll.unregister(self._handle_err)
-            os.close(self.err)
-            self.err = None
-            self._maybe_wait()
-
-    def get_precommand(self):
-        return None
-
-    def run_command(self):
-        self.dying = False
-        self.proc = subprocess.Popen(
-            MASTER_CMD,
-            # ["master.sh"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        self.out = self.proc.stdout.fileno()
-        self.err = self.proc.stderr.fileno()
-
-        nonblock(self.out)
-        nonblock(self.err)
-
-        self.poll.register(self.out, Poll.IN_FLAGS, self._handle_out)
-        self.poll.register(self.err, Poll.IN_FLAGS, self._handle_err)
-
-    def get_postcommand(self):
-        if self.postcommands_run == 1:
-            return None
-
-        self.postcommands_run += 1
-
-        atomic_op = ConnCheck("localhost", 8080, self.pipe_wr, "MASTER")
-        atomic_op.start()
-        return atomic_op
-
-    def running(self):
-        return self.proc is not None
-
-    def kill(self):
-        self.dying = True
-        self.proc.kill()
 
 class Poll:
     IN_FLAGS = select.POLLIN | select.POLLPRI
@@ -299,6 +163,29 @@ class Poll:
             handler = self.handlers[fd]
             handler(ev)
 
+class AtomicOperation:
+    """
+    Only have one atomic operation in flight at a time.  You must wait for it to finish but you may
+    request it ends early if you know you will ignore its output.
+
+    An example would be a connector which is trying to connect to the master binary, except if the
+    master binary has already exited, we will want to exit the connector.
+    """
+
+    @abc.abstractmethod
+    def __str__(self):
+        """Return a one-word summary of what the operation is"""
+        pass
+
+    @abc.abstractmethod
+    def cancel(self):
+        pass
+
+    @abc.abstractmethod
+    def join(self):
+        pass
+
+
 class ConnCheck(threading.Thread):
     """ConnCheck is an AtomicOperation."""
 
@@ -317,13 +204,16 @@ class ConnCheck(threading.Thread):
     def run(self):
         success = False
         try:
-            for _ in range(15):
+            # 30 seconds to succeed
+            deadline = time.time() + 30
+            while time.time() < deadline:
                 if self.quit:
                     break
                 s = socket.socket()
                 try:
-                    waittime = time.time() + 0.5
-                    s.settimeout(0.5)
+                    # try every 20ms
+                    waittime = time.time() + 0.02
+                    s.settimeout(0.02)
                     s.connect((self.host, self.port))
                 except (socket.timeout, ConnectionError) as _:
                     now = time.time()
@@ -338,6 +228,238 @@ class ConnCheck(threading.Thread):
 
     def cancel(self):
         self.quit = True
+
+
+class Process:
+    """
+    A long-running process may have precommands to run first and postcommands before it is ready.
+    """
+    def __init__(self, poll, log, log_name, cmd, set_target, next_thing):
+        self.proc = None
+        self.out = None
+        self.err = None
+        self.dying = False
+
+        self.poll = poll
+        self.log = log
+        self.next_thing = next_thing
+        self.set_target = set_target
+        self.cmd = cmd
+        self.log_name = log_name
+
+    def _maybe_wait(self):
+        """wait() on proc if both stdout and stderr are empty."""
+        if not self.dying:
+            self.log(f"{self.log_name} closing unexpectedly!\n")
+            self.set_target(States.DEAD)
+
+        if self.out is None and self.err is None:
+            ret = self.proc.wait()
+            self.log(f"{self.log_name} exited with {ret}\n")
+            self.log(f"NDET: {self.log_name} exited with {ret}\n", self.log_name)
+            self.proc = None
+            self._reset()
+            self.next_thing()
+
+    def _handle_out(self, ev):
+        if ev & Poll.IN_FLAGS:
+            self.log(os.read(self.out, 4096), self.log_name)
+        if ev & Poll.ERR_FLAGS:
+            self.poll.unregister(self._handle_out)
+            os.close(self.out)
+            self.out = None
+            self._maybe_wait()
+
+    def _handle_err(self, ev):
+        if ev & Poll.IN_FLAGS:
+            self.log(os.read(self.err, 4096), self.log_name)
+        if ev & Poll.ERR_FLAGS:
+            self.poll.unregister(self._handle_err)
+            os.close(self.err)
+            self.err = None
+            self._maybe_wait()
+
+    def get_precommand(self):
+        return None
+
+    def run_command(self):
+        self.dying = False
+        self.proc = subprocess.Popen(
+            self.cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.out = self.proc.stdout.fileno()
+        self.err = self.proc.stderr.fileno()
+
+        nonblock(self.out)
+        nonblock(self.err)
+
+        self.poll.register(self.out, Poll.IN_FLAGS, self._handle_out)
+        self.poll.register(self.err, Poll.IN_FLAGS, self._handle_err)
+
+    def running(self):
+        return self.proc is not None
+
+    def kill(self):
+        self.dying = True
+        self.proc.kill()
+
+    @abc.abstractmethod
+    def _reset(self):
+        pass
+
+    @abc.abstractmethod
+    def get_precommand(self):
+        """Return the next AtomicOperation or None, at which point it is safe to run_command)."""
+        pass
+
+    @abc.abstractmethod
+    def get_postcommand(self):
+        """Return the next AtomicOperation or None, at which point the command is up."""
+        pass
+
+
+DB_CMD = ('''
+docker run
+   --rm
+   -v ''' + os.environ["HOME"] + '''/.det-scripts/db-live:/var/lib/postgresql/data
+   -e POSTGRES_DB=pedl
+   -e POSTGRES_PASSWORD=jAmGMeVw3ycU2Ft
+   -p 5432:5432
+   --name determined_db
+   postgres:10.7 -N 10000
+''').strip().split()
+
+class DB(Process):
+    def __init__(self, poll, log, pipe_wr, set_target, next_thing):
+        super().__init__(poll, log, "db", DB_CMD, set_target, next_thing)
+
+        self.pipe_wr = pipe_wr
+        self._reset()
+
+    def _reset(self):
+        self.postcmd_has_run = False
+
+    def get_precommand(self):
+        return None
+
+    def get_postcommand(self):
+        if self.postcmd_has_run:
+            return None
+
+        self.postcmd_has_run = True
+
+        atomic_op = ConnCheck("localhost", 5432, self.pipe_wr, "DB")
+        atomic_op.start()
+        return atomic_op
+
+    def kill(self):
+        # TODO: figure out how to use real signals here instead.
+        self.dying = True
+
+        self.log(b"calling docker kill:\n")
+        p = subprocess.Popen(
+            ["docker", "kill", "determined_db"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+        err = p.stderr.read()
+        ret = p.wait()
+        if ret != 0:
+            self.log(b"docker kill says:\n" + asbytes(err))
+
+
+HASURA_CMD = '''
+docker run -p 8081:8080 --rm
+  --name det_hasura
+  -e HASURA_GRAPHQL_ADMIN_SECRET=ML7hq3Lyuxv4qUb
+  -e HASURA_GRAPHQL_DATABASE_URL=postgres://postgres:jAmGMeVw3ycU2Ft@192.168.0.4:5432/pedl
+  -e HASURA_GRAPHQL_ENABLE_CONSOLE=true
+  -e HASURA_GRAPHQL_ENABLE_TELEMETRY=false
+  -e HASURA_GRAPHQL_CONSOLE_ASSETS_DIR=/srv/console-assets
+  -e HASURA_GRAPHQL_LOG_LEVEL=warn
+  hasura/graphql-engine:v1.1.0
+'''.strip().split()
+
+class Hasura(Process):
+    def __init__(self, poll, log, pipe_wr, set_target, next_thing):
+        super().__init__(poll, log, "hasura", HASURA_CMD, set_target, next_thing)
+
+        self.pipe_wr = pipe_wr
+        self._reset()
+
+    def _reset(self):
+        self.postcmd_has_run = False
+
+    def get_precommand(self):
+        return None
+
+    def get_postcommand(self):
+        if self.postcmd_has_run:
+            return None
+
+        self.postcmd_has_run = True
+
+        atomic_op = ConnCheck("localhost", 8081, self.pipe_wr, "HASURA")
+        atomic_op.start()
+        return atomic_op
+
+    def kill(self):
+        # TODO: figure out how to use real signals here instead.
+        self.dying = True
+
+        self.log(b"calling docker kill:\n")
+        p = subprocess.Popen(
+            ["docker", "kill", "det_hasura"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+        err = p.stderr.read()
+        ret = p.wait()
+        if ret != 0:
+            self.log(b"docker kill says:\n" + asbytes(err))
+
+
+class Master(Process):
+    def __init__(self, poll, log, pipe_wr, set_target, next_thing):
+        super().__init__(poll, log, "master", MASTER_CMD, set_target, next_thing)
+
+        self.pipe_wr = pipe_wr
+        self._reset()
+
+    def _reset(self):
+        self.postcmd_has_run = False
+
+    def get_precommand(self):
+        return None
+
+    def get_postcommand(self):
+        if self.postcmd_has_run:
+            return None
+
+        self.postcmd_has_run = True
+
+        atomic_op = ConnCheck("localhost", 8080, self.pipe_wr, "MASTER")
+        atomic_op.start()
+        return atomic_op
+
+
+class Agent(Process):
+    def __init__(self, poll, log, set_target, next_thing):
+        super().__init__(poll, log, "agent", AGENT_CMD, set_target, next_thing)
+
+    def _reset(self):
+        pass
+
+    def get_precommand(self):
+        return None
+
+    def get_postcommand(self):
+        return None
 
 
 class NDet:
@@ -359,14 +481,19 @@ class NDet:
 
         self.logs = {
             "ndet": b"",
+            "db": b"",
+            "hasura": b"",
             "master": b"",
+            "agent": b"",
         }
         self.active_stream = ""
 
-        self.set_active_stream("ndet")
+        self.set_active_stream("master")
 
-        # Master process
+        self.db = DB(self.poll, self.log, self.pipe_wr, self.set_target, self.next_thing)
+        self.hasura = Hasura(self.poll, self.log, self.pipe_wr, self.set_target, self.next_thing)
         self.master = Master(self.poll, self.log, self.pipe_wr, self.set_target, self.next_thing)
+        self.agent = Agent(self.poll, self.log, self.set_target, self.next_thing)
 
 
     def log(self, msg, stream="ndet"):
@@ -420,9 +547,19 @@ class NDet:
           - an atomic operation completes
           - a long-running process is closed
         """
-        # Nothing to do.
+        # Possibly further some atomic operations in the current state.
         if self.state == self.target:
-            return
+            if self.state == States.DB:
+                self.advance_process(self.db)
+
+            elif self.state == States.HASURA:
+                self.advance_process(self.hasura)
+
+            elif self.state == States.MASTER:
+                self.advance_process(self.master)
+
+            elif self.state == States.AGENT:
+                self.advance_process(self.agent)
 
         # Advance state?
         if self.state < self.target:
@@ -431,8 +568,26 @@ class NDet:
                 return
 
             if self.state == States.DEAD:
-                self.transition(States.MASTER)
+                self.transition(States.DB)
+
+            elif self.state == States.DB:
+                self.advance_process(self.db)
+                if self.atomic_op is None:
+                    self.transition(States.HASURA)
+
+            elif self.state == States.HASURA:
+                self.advance_process(self.hasura)
+                if self.atomic_op is None:
+                    self.transition(States.MASTER)
+
+            elif self.state == States.MASTER:
                 self.advance_process(self.master)
+                if self.atomic_op is None:
+                    self.transition(States.AGENT)
+
+            elif self.state == States.AGENT:
+                self.advance_process(self.agent)
+
             else:
                 raise NotImplementedError()
 
@@ -443,11 +598,30 @@ class NDet:
                 self.atomic_op.cancel()
                 return
 
-            if self.state == States.MASTER:
+            if self.state == States.DB:
+                if self.db.running():
+                    self.db.kill()
+                    return
+                self.transition(States.DEAD)
+
+            elif self.state == States.HASURA:
+                if self.hasura.running():
+                    self.hasura.kill()
+                    return
+                self.transition(States.DB)
+
+            elif self.state == States.MASTER:
                 if self.master.running():
                     self.master.kill()
                     return
-                self.transition(States.DEAD)
+                self.transition(States.HASURA)
+
+            elif self.state == States.AGENT:
+                if self.agent.running():
+                    self.agent.kill()
+                    return
+                self.transition(States.MASTER)
+
             else:
                 raise NotImplementedError()
 
@@ -497,7 +671,7 @@ class NDet:
         self.place_cursor(row, col)
 
     def run(self):
-        self.set_target(States.MASTER)
+        self.set_target(States.AGENT)
         while not (self.quitting and self.state == States.DEAD):
             self.print_bar()
             self.poll.poll()
@@ -505,21 +679,42 @@ class NDet:
     def handle_stdin(self, ev):
         c = sys.stdin.read(1)
         if c == '\x03':
-            if self.quitting or self.state == States.DEAD:
+            # Raise an error on the second try.
+            if self.quitting:
                 raise KeyboardInterrupt()
+            # Exit gracefully on the first try.
             self.log("quitting...\n")
             self.quitting = True
             self.set_target(States.DEAD)
+        elif c == "q":
+            self.log("quitting...\n")
+            self.quitting = True
+            self.set_target(States.DEAD)
+        elif c == "d":
+            self.set_active_stream("db")
+        elif c == "h":
+            self.set_active_stream("hasura")
         elif c == "m":
             self.set_active_stream("master")
+        elif c == "a":
+            self.set_active_stream("agent")
         elif c == "c":
             self.set_active_stream("ndet")
         elif c == "1":
             self.set_target(States.DEAD)
             self.log("set target dead!\n")
         elif c == "2":
+            self.set_target(States.DB)
+            self.log("set target db!\n")
+        elif c == "3":
+            self.set_target(States.HASURA)
+            self.log("set target hasura!\n")
+        elif c == "4":
             self.set_target(States.MASTER)
             self.log("set target master!\n")
+        elif c == "5":
+            self.set_target(States.AGENT)
+            self.log("set target agent!\n")
 
     def handle_pipe(self, ev):
         self.atomic_op.join()
