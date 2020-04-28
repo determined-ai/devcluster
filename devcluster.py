@@ -48,64 +48,6 @@ def invert_colors(msg):
     return b'\x1b[7m' + msg + b'\x1b[0m'
 
 
-class States(enum.Enum):
-    DEAD = "DEAD"
-    DB = "DB"
-    HASURA = "HASURA"
-    MASTER = "MASTER"
-    AGENT = "AGENT"
-
-    def __str__(self):
-        if self == States.DEAD: return "DEAD"
-        if self == States.DB: return "DB"
-        if self == States.HASURA: return "HASURA"
-        if self == States.MASTER: return "MASTER"
-        if self == States.AGENT: return "AGENT"
-
-    def get_index(self):
-        return {
-            States.DEAD: 0,
-            States.DB: 1,
-            States.HASURA: 2,
-            States.MASTER: 3,
-            States.AGENT: 4,
-        }[self]
-
-    def __cmp__(self, other):
-        s = self.get_index()
-        o = other.get_index()
-        if s < o: return -1
-        return int(s > o)
-
-    def __lt__(self, other):
-        return self.get_index() < other.get_index()
-
-    def __rlt__(self, other):
-        return self.get_index() < other.get_index()
-
-    @staticmethod
-    def from_index(index):
-        return (
-            States.DEAD,
-            States.DB,
-            States.HASURA,
-            States.MASTER,
-            States.AGENT,
-        )[min(max(index ,0), 4)]
-
-    def __sub__(self, num):
-        return States.from_index(self.get_index() - num)
-
-    def __add__(self, num):
-        return States.from_index(self.get_index() - num)
-
-    def __rsub__(self, num):
-        return States.from_index(self.get_index() - num)
-
-    def __radd__(self, num):
-        return States.from_index(self.get_index() - num)
-
-
 def asbytes(msg):
     if isinstance(msg, bytes):
         return msg
@@ -142,6 +84,7 @@ class Poll:
         for fd, ev in ready:
             handler = self.handlers[fd]
             handler(ev)
+
 
 class AtomicOperation:
     """
@@ -288,11 +231,73 @@ class BuildOperation(AtomicOperation):
         pass
 
 
-class Process:
+class Stage:
+    @abc.abstractmethod
+    def get_precommand(self):
+        pass
+
+    @abc.abstractmethod
+    def run_command(self):
+        pass
+
+    @abc.abstractmethod
+    def running(self):
+        pass
+
+    @abc.abstractmethod
+    def kill(self):
+        pass
+
+    @abc.abstractmethod
+    def get_precommand(self):
+        """Return the next AtomicOperation or None, at which point it is safe to run_command)."""
+        pass
+
+    @abc.abstractmethod
+    def get_postcommand(self):
+        """Return the next AtomicOperation or None, at which point the command is up."""
+        pass
+
+    @abc.abstractmethod
+    def log_name(self):
+        """return the name of this stage, it must be unique"""
+        pass
+
+class DeadStage(Stage):
+    """A noop stage for the base state of the state machine"""
+
+    def __init__(self, state_machine):
+        self.state_machine = state_machine
+        self._running = False
+
+    def get_precommand(self):
+        return None
+
+    def run_command(self):
+        self._running = True
+
+    def running(self):
+        return self._running
+
+    def kill(self):
+        self._running = False
+        self.state_machine.next_thing()
+
+    def get_precommand(self):
+        pass
+
+    def get_postcommand(self):
+        pass
+
+    def log_name(self):
+        return "dead"
+
+
+class Process(Stage):
     """
     A long-running process may have precommands to run first and postcommands before it is ready.
     """
-    def __init__(self, poll, logger, state_machine, log_name, cmd):
+    def __init__(self, poll, logger, state_machine, cmd):
         self.proc = None
         self.out = None
         self.err = None
@@ -303,25 +308,27 @@ class Process:
         self.state_machine = state_machine
 
         self.cmd = cmd
-        self.log_name = log_name
+
+        self._reset()
 
     def _maybe_wait(self):
         """wait() on proc if both stdout and stderr are empty."""
         if not self.dying:
-            self.log(f"{self.log_name} closing unexpectedly!\n")
-            self.state_machine.set_target(States.DEAD)
+            self.log(f"{self.log_name()} closing unexpectedly!\n")
+            # TODO: don't always go to dead state
+            self.state_machine.set_target(0)
 
         if self.out is None and self.err is None:
             ret = self.proc.wait()
-            self.log(f"{self.log_name} exited with {ret}\n")
-            self.log(f" ----- {self.log_name} exited with {ret} -----\n", self.log_name)
+            self.log(f"{self.log_name()} exited with {ret}\n")
+            self.log(f" ----- {self.log_name()} exited with {ret} -----\n", self.log_name())
             self.proc = None
             self._reset()
             self.state_machine.next_thing()
 
     def _handle_out(self, ev):
         if ev & Poll.IN_FLAGS:
-            self.log(os.read(self.out, 4096), self.log_name)
+            self.log(os.read(self.out, 4096), self.log_name())
         if ev & Poll.ERR_FLAGS:
             self.poll.unregister(self._handle_out)
             os.close(self.out)
@@ -330,7 +337,7 @@ class Process:
 
     def _handle_err(self, ev):
         if ev & Poll.IN_FLAGS:
-            self.log(os.read(self.err, 4096), self.log_name)
+            self.log(os.read(self.err, 4096), self.log_name())
         if ev & Poll.ERR_FLAGS:
             self.poll.unregister(self._handle_err)
             os.close(self.err)
@@ -368,16 +375,6 @@ class Process:
     def _reset(self):
         pass
 
-    @abc.abstractmethod
-    def get_precommand(self):
-        """Return the next AtomicOperation or None, at which point it is safe to run_command)."""
-        pass
-
-    @abc.abstractmethod
-    def get_postcommand(self):
-        """Return the next AtomicOperation or None, at which point the command is up."""
-        pass
-
 
 DB_CMD = ('''
 docker run
@@ -392,12 +389,13 @@ docker run
 
 class DB(Process):
     def __init__(self, poll, logger, state_machine):
-        super().__init__(poll, logger, state_machine, "db", DB_CMD)
-
-        self._reset()
+        super().__init__(poll, logger, state_machine, DB_CMD)
 
     def _reset(self):
         self.postcmd_has_run = False
+
+    def log_name(self):
+        return "db"
 
     def get_precommand(self):
         return None
@@ -441,12 +439,13 @@ docker run -p 8081:8080 --rm
 
 class Hasura(Process):
     def __init__(self, poll, logger, state_machine):
-        super().__init__(poll, logger, state_machine, "hasura", HASURA_CMD)
-
-        self._reset()
+        super().__init__(poll, logger, state_machine, HASURA_CMD)
 
     def _reset(self):
         self.postcmd_has_run = False
+
+    def log_name(self):
+        return "hasura"
 
     def get_precommand(self):
         return None
@@ -499,13 +498,14 @@ MASTER_CMD = [
 
 class Master(Process):
     def __init__(self, poll, logger, state_machine):
-        super().__init__(poll, logger, state_machine, "master", MASTER_CMD)
-
-        self._reset()
+        super().__init__(poll, logger, state_machine, MASTER_CMD)
 
     def _reset(self):
         self.precmd_has_run = False
         self.postcmd_has_run = False
+
+    def log_name(self):
+        return "master"
 
     def get_precommand(self):
         if self.precmd_has_run:
@@ -544,12 +544,13 @@ AGENT_CMD = [
 
 class Agent(Process):
     def __init__(self, poll, logger, state_machine):
-        super().__init__(poll, logger, state_machine, "agent", AGENT_CMD)
-
-        self._reset()
+        super().__init__(poll, logger, state_machine, AGENT_CMD)
 
     def _reset(self):
         self.precmd_has_run = False
+
+    def log_name(self):
+        return "agent"
 
     def get_precommand(self):
         if self.precmd_has_run:
@@ -597,8 +598,9 @@ class StateMachine:
         self.pipe_rd, self.pipe_wr = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
         poll.register(self.pipe_rd, Poll.IN_FLAGS, self.handle_pipe)
 
-        self.state = States.DEAD
-        self.target = States.DEAD
+        self.stages = [DeadStage(self)]
+        self.state = 0
+        self.target = 0
 
         self.old_status = (self.state, self.atomic_op, self.target)
 
@@ -614,16 +616,25 @@ class StateMachine:
     def get_report_fd(self):
         return self.pipe_wr
 
+    def add_stage(self, stage):
+        self.stages.append(stage)
+
     def add_callback(self, cb):
         self.callbacks.append(cb)
 
-    def advance_process(self, process):
+    def advance_stage(self):
         """
         Either:
           - start the next precommand,
           - start the real command (and maybe a postcommand), or
           - start the next postcommand
         """
+
+        # nothing to do in the dead state
+        if self.state < 0:
+            return
+
+        process = self.stages[self.state]
         # Is there another precommand?
         atomic_op = process.get_precommand()
         if atomic_op is not None:
@@ -638,85 +649,6 @@ class StateMachine:
             self.atomic_op = atomic_op
             return
 
-    def _next_thing(self):
-        # Possibly further some atomic operations in the current state.
-        if self.state == self.target:
-            if self.state == States.DB:
-                self.advance_process(self.db)
-
-            elif self.state == States.HASURA:
-                self.advance_process(self.hasura)
-
-            elif self.state == States.MASTER:
-                self.advance_process(self.master)
-
-            elif self.state == States.AGENT:
-                self.advance_process(self.agent)
-
-        # Advance state?
-        if self.state < self.target:
-            # Wait for the atomic operation to finish.
-            if self.atomic_op is not None:
-                return
-
-            if self.state == States.DEAD:
-                self.transition(States.DB)
-
-            elif self.state == States.DB:
-                self.advance_process(self.db)
-                if self.atomic_op is None:
-                    self.transition(States.HASURA)
-
-            elif self.state == States.HASURA:
-                self.advance_process(self.hasura)
-                if self.atomic_op is None:
-                    self.transition(States.MASTER)
-
-            elif self.state == States.MASTER:
-                self.advance_process(self.master)
-                if self.atomic_op is None:
-                    self.transition(States.AGENT)
-
-            elif self.state == States.AGENT:
-                self.advance_process(self.agent)
-
-            else:
-                raise NotImplementedError()
-
-        # Regress state.
-        if self.state > self.target:
-            # Cancel any atomic operations first.
-            if self.atomic_op is not None:
-                self.atomic_op.cancel()
-                return
-
-            if self.state == States.DB:
-                if self.db.running():
-                    self.db.kill()
-                    return
-                self.transition(States.DEAD)
-
-            elif self.state == States.HASURA:
-                if self.hasura.running():
-                    self.hasura.kill()
-                    return
-                self.transition(States.DB)
-
-            elif self.state == States.MASTER:
-                if self.master.running():
-                    self.master.kill()
-                    return
-                self.transition(States.HASURA)
-
-            elif self.state == States.AGENT:
-                if self.agent.running():
-                    self.agent.kill()
-                    return
-                self.transition(States.MASTER)
-
-            else:
-                raise NotImplementedError()
-
     def next_thing(self):
         """
         Should be called either when:
@@ -724,14 +656,40 @@ class StateMachine:
           - an atomic operation completes
           - a long-running process is closed
         """
-        self._next_thing()
+        # Possibly further some atomic operations in the current state.
+        if self.state == self.target:
+            self.advance_stage()
+
+        # Advance state?
+        elif self.state < self.target:
+            # Wait for the atomic operation to finish.
+            if self.atomic_op is not None:
+                pass
+            else:
+                self.advance_stage()
+                if self.atomic_op is None:
+                    self.transition(self.state + 1)
+
+        # Regress state.
+        elif self.state > self.target:
+            # Cancel any atomic operations first.
+            if self.atomic_op is not None:
+                self.atomic_op.cancel()
+            else:
+                if self.stages[self.state].running():
+                    self.stages[self.state].kill()
+                else:
+                    self.transition(self.state - 1)
 
         # Notify changes of state.
         new_status = (self.state, self.atomic_op, self.target)
         if self.old_status != new_status:
+            state_str = self.stages[self.state].log_name().upper()
             atomic_str = str(self.atomic_op) if self.atomic_op else ""
+            target_str = self.stages[self.target].log_name().upper()
             for cb in self.callbacks:
-                cb(str(self.state), atomic_str, str(self.target))
+                cb(state_str, atomic_str, target_str)
+
             self.old_status = new_status
 
     def set_target(self, target):
@@ -750,7 +708,7 @@ class StateMachine:
         # Exit gracefully on the first try.
         self.logger.log("quitting...\n")
         self.quitting = True
-        self.set_target(States.DEAD)
+        self.set_target(0)
 
     def transition(self, new_state):
         """For when you arrive at a new state."""
@@ -775,7 +733,7 @@ class StateMachine:
             raise ValueError("pipe failed!")
 
     def should_run(self):
-        return not (self.quitting and self.state == States.DEAD)
+        return not (self.quitting and self.state == 0)
 
 
 class Console:
@@ -835,20 +793,20 @@ class Console:
             self.set_active_stream("agent")
         elif c == "c":
             self.set_active_stream("console")
-        elif c == "1":
-            self.state_machine.set_target(States.DEAD)
+        elif c == "0":
+            self.state_machine.set_target(0)
             self.logger.log("set target dead!\n")
-        elif c == "2":
-            self.state_machine.set_target(States.DB)
+        elif c == "1":
+            self.state_machine.set_target(1)
             self.logger.log("set target db!\n")
-        elif c == "3":
-            self.state_machine.set_target(States.HASURA)
+        elif c == "2":
+            self.state_machine.set_target(2)
             self.logger.log("set target hasura!\n")
-        elif c == "4":
-            self.state_machine.set_target(States.MASTER)
+        elif c == "3":
+            self.state_machine.set_target(3)
             self.logger.log("set target master!\n")
-        elif c == "5":
-            self.state_machine.set_target(States.AGENT)
+        elif c == "4":
+            self.state_machine.set_target(4)
             self.logger.log("set target agent!\n")
 
     def get_cursor_pos(self):
@@ -890,14 +848,12 @@ def main(argv):
 
         console = Console(logger, poll, state_machine)
 
-        state_machine.set_stages(
-            DB(poll, logger, state_machine),
-            Hasura(poll, logger, state_machine),
-            Master(poll, logger, state_machine),
-            Agent(poll, logger, state_machine),
-        )
+        state_machine.add_stage(DB(poll, logger, state_machine))
+        state_machine.add_stage(Hasura(poll, logger, state_machine))
+        state_machine.add_stage(Master(poll, logger, state_machine))
+        state_machine.add_stage(Agent(poll, logger, state_machine))
 
-        state_machine.set_target(States.AGENT)
+        state_machine.set_target(4)
 
         while state_machine.should_run():
             poll.poll()
