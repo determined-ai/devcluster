@@ -10,9 +10,12 @@ import termios
 import contextlib
 import threading
 import socket
+import yaml
 
 import subprocess
 import fcntl
+
+import argparse
 
 
 @contextlib.contextmanager
@@ -46,6 +49,17 @@ def terminal_config():
 
 def invert_colors(msg):
     return b'\x1b[7m' + msg + b'\x1b[0m'
+
+
+_gopath = None
+def get_gopath():
+    global _gopath
+    if _gopath is None:
+        p = subprocess.Popen(["go", "env", "GOPATH"], stdout=subprocess.PIPE)
+        _gopath = p.stdout.read().strip().decode("utf8")
+        assert p.wait() == 0
+    return _gopath
+
 
 
 def asbytes(msg):
@@ -112,11 +126,10 @@ class AtomicOperation:
 class ConnCheck(threading.Thread):
     """ConnCheck is an AtomicOperation."""
 
-    def __init__(self, host, port, report_fd, success_msg):
+    def __init__(self, host, port, report_fd):
         self.host = host
         self.port = port
         self.report_fd = report_fd
-        self.success_msg = asbytes(success_msg)
         self.quit = False
 
         super().__init__()
@@ -150,27 +163,23 @@ class ConnCheck(threading.Thread):
                 success = True
                 break
         finally:
-            os.write(self.report_fd, self.success_msg if success else b'FAIL')
+            os.write(self.report_fd, b'success' if success else b'FAIL')
 
     def cancel(self):
         self.quit = True
 
 
-class BuildOperation(AtomicOperation):
-    """BuildOperation is an AtomicOperation."""
-
-    def __init__(self, build_cmd, poll, log, log_name, report_fd, success_msg):
+class AtomicSubprocess(AtomicOperation):
+    def __init__(self, poll, log, report_fd, cmd):
         self.poll = poll
         self.log = log
-        self.log_name = log_name
-
         self.report_fd = report_fd
-        self.success_msg = asbytes(success_msg)
+
         self.start_time = time.time()
 
         self.dying = False
         self.proc = subprocess.Popen(
-            build_cmd,
+            cmd,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -195,19 +204,19 @@ class BuildOperation(AtomicOperation):
             success = False
 
             if self.dying:
-                self.log(" ----- build canceled -----\n", self.log_name)
+                self.log(" ----- {self} canceled -----\n")
             elif ret != 0:
-                self.log(f" ----- build exited with {ret} -----\n", self.log_name)
+                self.log(f" ----- {self} exited with {ret} -----\n")
             else:
                 build_time = time.time() - self.start_time
-                self.log(" ----- build complete! (%.2fs) -----\n"%(build_time), self.log_name)
+                self.log(" ----- {self} complete! (%.2fs) -----\n"%(build_time))
                 success = True
 
-            os.write(self.report_fd, self.success_msg if success else b'FAIL')
+            os.write(self.report_fd, b'SUCCESS' if success else b'FAIL')
 
     def _handle_out(self, ev):
         if ev & Poll.IN_FLAGS:
-            self.log(os.read(self.out, 4096), self.log_name)
+            self.log(os.read(self.out, 4096))
         if ev & Poll.ERR_FLAGS:
             self.poll.unregister(self._handle_out)
             os.close(self.out)
@@ -216,7 +225,7 @@ class BuildOperation(AtomicOperation):
 
     def _handle_err(self, ev):
         if ev & Poll.IN_FLAGS:
-            self.log(os.read(self.err, 4096), self.log_name)
+            self.log(os.read(self.err, 4096))
         if ev & Poll.ERR_FLAGS:
             self.poll.unregister(self._handle_err)
             os.close(self.err)
@@ -263,6 +272,7 @@ class Stage:
         """return the name of this stage, it must be unique"""
         pass
 
+
 class DeadStage(Stage):
     """A noop stage for the base state of the state machine"""
 
@@ -297,17 +307,16 @@ class Process(Stage):
     """
     A long-running process may have precommands to run first and postcommands before it is ready.
     """
-    def __init__(self, poll, logger, state_machine, cmd):
+    def __init__(self, config, poll, logger, state_machine):
         self.proc = None
         self.out = None
         self.err = None
         self.dying = False
 
+        self.config = config
         self.poll = poll
         self.log = logger.log
         self.state_machine = state_machine
-
-        self.cmd = cmd
 
         self._reset()
 
@@ -345,12 +354,27 @@ class Process(Stage):
             self._maybe_wait()
 
     def get_precommand(self):
+        if self.precmds_run < len(self.config.pre):
+            precmd_config = self.config.pre[self.precmds_run]
+            self.precmds_run += 1
+            return precmd_config.build_atomic(
+                self.poll, self.log, self.state_machine.get_report_fd()
+            )
+        return None
+
+    def get_postcommand(self):
+        if self.postcmds_run < len(self.config.post):
+            postcmd_config = self.config.post[self.postcmds_run]
+            self.postcmds_run += 1
+            return postcmd_config.build_atomic(
+                self.poll, self.log, self.state_machine.get_report_fd()
+            )
         return None
 
     def run_command(self):
         self.dying = False
         self.proc = subprocess.Popen(
-            self.cmd,
+            self.config.cmd,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -368,207 +392,37 @@ class Process(Stage):
         return self.proc is not None
 
     def kill(self):
-        self.dying = True
-        self.proc.kill()
-
-    @abc.abstractmethod
-    def _reset(self):
-        pass
-
-
-DB_CMD = ('''
-docker run
-   --rm
-   -v ''' + os.environ["HOME"] + '''/.det-scripts/db-live:/var/lib/postgresql/data
-   -e POSTGRES_DB=pedl
-   -e POSTGRES_PASSWORD=jAmGMeVw3ycU2Ft
-   -p 5432:5432
-   --name determined_db
-   postgres:10.7 -N 10000
-''').strip().split()
-
-class DB(Process):
-    def __init__(self, poll, logger, state_machine):
-        super().__init__(poll, logger, state_machine, DB_CMD)
-
-    def _reset(self):
-        self.postcmd_has_run = False
+        if len(self.config.kill) == 0:
+            # kill via signal
+            self.dying = True
+            self.proc.kill()
+        else:
+            # kill via command (mainly for docker containers)
+            self.dying = True
+            p = subprocess.Popen(
+                self.config.kill,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
+            err = p.stderr.read()
+            ret = p.wait()
+            if ret != 0:
+                kill_str = " ".join(self.config.kill)
+                self.log(asbytes(f"\"{kill_str}\" says:\n") + asbytes(err))
 
     def log_name(self):
-        return "db"
-
-    def get_precommand(self):
-        return None
-
-    def get_postcommand(self):
-        if self.postcmd_has_run:
-            return None
-
-        self.postcmd_has_run = True
-
-        return ConnCheck("localhost", 5432, self.state_machine.get_report_fd(), "DB")
-
-    def kill(self):
-        # TODO: figure out how to use real signals here instead.
-        self.dying = True
-
-        self.log(b"calling docker kill:\n")
-        p = subprocess.Popen(
-            ["docker", "kill", "determined_db"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-        )
-        err = p.stderr.read()
-        ret = p.wait()
-        if ret != 0:
-            self.log(b"docker kill says:\n" + asbytes(err))
-
-
-HASURA_CMD = '''
-docker run -p 8081:8080 --rm
-  --name det_hasura
-  -e HASURA_GRAPHQL_ADMIN_SECRET=ML7hq3Lyuxv4qUb
-  -e HASURA_GRAPHQL_DATABASE_URL=postgres://postgres:jAmGMeVw3ycU2Ft@192.168.0.4:5432/pedl
-  -e HASURA_GRAPHQL_ENABLE_CONSOLE=true
-  -e HASURA_GRAPHQL_ENABLE_TELEMETRY=false
-  -e HASURA_GRAPHQL_CONSOLE_ASSETS_DIR=/srv/console-assets
-  -e HASURA_GRAPHQL_LOG_LEVEL=warn
-  hasura/graphql-engine:v1.1.0
-'''.strip().split()
-
-class Hasura(Process):
-    def __init__(self, poll, logger, state_machine):
-        super().__init__(poll, logger, state_machine, HASURA_CMD)
+        return self.config.name
 
     def _reset(self):
-        self.postcmd_has_run = False
-
-    def log_name(self):
-        return "hasura"
-
-    def get_precommand(self):
-        return None
-
-    def get_postcommand(self):
-        if self.postcmd_has_run:
-            return None
-
-        self.postcmd_has_run = True
-
-        return ConnCheck("localhost", 8081, self.state_machine.get_report_fd(), "HASURA")
-
-    def kill(self):
-        # TODO: figure out how to use real signals here instead.
-        self.dying = True
-
-        self.log(b"calling docker kill:\n")
-        p = subprocess.Popen(
-            ["docker", "kill", "det_hasura"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-        )
-        err = p.stderr.read()
-        ret = p.wait()
-        if ret != 0:
-            self.log(b"docker kill says:\n" + asbytes(err))
-
-
-MASTER_BUILD_CMD = [
-    "make",
-    "-C",
-    os.path.expanduser("~/code/determined/master"),
-    "build-files",
-    "install-native",
-]
-
-
-MASTER_CMD = [
-    os.path.join(os.path.expanduser("~/go/bin"), "determined-master"),
-    "--log-level", "debug",
-    "--db-user", "postgres",
-    "--db-port", "5432",
-    "--db-name", "pedl",
-    "--db-password=jAmGMeVw3ycU2Ft",
-    "--hasura-secret=ML7hq3Lyuxv4qUb",
-    "--root", os.path.expanduser("~/code/determined/build/share/determined/master"),
-]
-
-
-class Master(Process):
-    def __init__(self, poll, logger, state_machine):
-        super().__init__(poll, logger, state_machine, MASTER_CMD)
-
-    def _reset(self):
-        self.precmd_has_run = False
-        self.postcmd_has_run = False
-
-    def log_name(self):
-        return "master"
-
-    def get_precommand(self):
-        if self.precmd_has_run:
-            return None
-
-        self.precmd_has_run = True
-
-        return BuildOperation(
-            MASTER_BUILD_CMD, self.poll, self.log, "master", self.state_machine.get_report_fd(), "MASTER_BUILD"
-        )
-
-    def get_postcommand(self):
-        if self.postcmd_has_run:
-            return None
-
-        self.postcmd_has_run = True
-
-        return ConnCheck("localhost", 8080, self.state_machine.get_report_fd(), "MASTER")
-
-
-AGENT_BUILD_CMD = [
-    "make",
-    "-C",
-    os.path.expanduser("~/code/determined/agent"),
-    "install-native",
-]
-
-
-AGENT_CMD = [
-    os.path.join(os.path.expanduser("~/go/bin"), "determined-agent"),
-    "--master-host", "192.168.0.4",
-    "--master-port", "8080",
-    "run"
-]
-
-
-class Agent(Process):
-    def __init__(self, poll, logger, state_machine):
-        super().__init__(poll, logger, state_machine, AGENT_CMD)
-
-    def _reset(self):
-        self.precmd_has_run = False
-
-    def log_name(self):
-        return "agent"
-
-    def get_precommand(self):
-        if self.precmd_has_run:
-            return None
-
-        self.precmd_has_run = True
-
-        return BuildOperation(
-            AGENT_BUILD_CMD, self.poll, self.log, "agent", self.state_machine.get_report_fd(), "AGENT_BUILD"
-        )
-
-    def get_postcommand(self):
-        return None
+        self.precmds_run = 0
+        self.postcmds_run = 0
 
 
 class Logger:
     def __init__(self, streams):
-        self.streams = {stream:b"" for stream in streams}
+        self.streams = {stream: b"" for stream in streams}
+        self.streams["console"] = b""
         self.callbacks = []
 
     def log(self, msg, stream="console"):
@@ -605,13 +459,6 @@ class StateMachine:
         self.old_status = (self.state, self.atomic_op, self.target)
 
         self.callbacks = []
-
-    # TODO: clean up lazy initialization
-    def set_stages(self, db, hasura, master, agent):
-        self.db = db
-        self.hasura = hasura
-        self.master = master
-        self.agent = agent
 
     def get_report_fd(self):
         return self.pipe_wr
@@ -656,6 +503,7 @@ class StateMachine:
           - an atomic operation completes
           - a long-running process is closed
         """
+
         # Possibly further some atomic operations in the current state.
         if self.state == self.target:
             self.advance_stage()
@@ -838,26 +686,277 @@ class Console:
         self.place_cursor(row, col)
 
 
-def main(argv):
+def check_keys(allowed, required, config, name):
+    extra = set(config.keys()).difference(allowed)
+    assert len(extra) == 0, f"invalid keys for {name}: {extra}"
+    missing = required.difference(set(config.keys()))
+    assert len(missing) == 0, f"missing required keys for {name}: {missing}"
+
+
+def check_list_of_strings(l, msg):
+    assert isinstance(l, list), msg
+    for s in l:
+        assert isinstance(s, str), msg
+
+
+def check_list_of_dicts(l, msg):
+    assert isinstance(l, list), msg
+    for s in l:
+        assert isinstance(s, dict), msg
+
+
+class StageConfig:
+    @staticmethod
+    def read(config):
+        allowed = {"db", "master", "agent", "custom"}
+        required = set()
+
+        assert isinstance(config, dict), "StageConfig must be a dictionary with a single key"
+        assert len(config), "StageConfig must be a dictionary with a single key"
+        typ, val = next(iter(config.items()))
+        assert typ in allowed, f"{typ} is not one of {allowed}"
+
+        if typ == "custom":
+            return CustomConfig(val)
+        elif typ == "db":
+            return DBConfig(val)
+        elif typ == "master":
+            return MasterConfig(val)
+        elif typ == "agent":
+            return AgentConfig(val)
+
+    @abc.abstractmethod
+    def build_stage():
+        pass
+
+
+class AtomicConfig:
+    @staticmethod
+    def read(config):
+        allowed = {"custom", "conncheck"}
+        required = set()
+
+        assert isinstance(config, dict), "AtomicConfig must be a dictionary with a single key"
+        assert len(config), "AtomicConfig must be a dictionary with a single key"
+        typ, val = next(iter(config.items()))
+        assert typ in allowed, f"{typ} is not one of {allowed}"
+
+        if typ == "custom":
+            return CustomAtomicConfig(val)
+        elif typ == "conncheck":
+            return ConnCheckConfig(val)
+
+    @abc.abstractmethod
+    def build_atomic(self, poll, log, report_fd):
+        pass
+
+
+class DBConfig(StageConfig):
+    """DBConfig is a canned stage that runs the database in docker"""
+
+    def __init__(self, config):
+        allowed = {"port", "password", "db_name", "data_dir", "container_name"}
+        required = set()
+        check_keys(allowed, required, config, type(self).__name__)
+
+        self.port = int(config.get("port", 5432))
+        self.password = str(config.get("password", "postgres"))
+        self.db_name = str(config.get("db_name", "determined"))
+        self.container_name = str(config.get("container_name", "determined_db"))
+        self.data_dir = config.get("data_dir")
+        self.name = "db"
+
+    def build_stage(self, poll, logger, state_machine):
+        cmd = [
+            "docker",
+            "run",
+            "--rm",
+        ]
+
+        if self.data_dir:
+            cmd += ["-v", f"{self.data_dir}:/var/lib/postgresql/data"]
+
+        cmd += [
+            "-e",
+            f"POSTGRES_DB={self.db_name}",
+            "-e",
+            f"POSTGRES_PASSWORD={self.password}",
+            "-p",
+            f"{self.port}:5432",
+            "--name",
+            self.container_name,
+            "postgres:10.7",
+            "-N",
+            "10000",
+        ]
+
+        custom_config = CustomConfig({
+            "cmd": cmd,
+            "name": "db",
+            "post": [{"conncheck": {"port": self.port}}],
+            "kill": ["docker", "kill", self.container_name],
+        })
+
+        return Process(custom_config, poll, logger, state_machine)
+
+
+class MasterConfig(StageConfig):
+    def __init__(self, config):
+        self.config = config
+        self.name = "master"
+
+    def build_stage(self, poll, logger, state_machine):
+        config_path = "/tmp/devcluster-master.conf"
+        with open(config_path, "w") as f:
+            f.write(yaml.dump(self.config))
+
+        cmd = [
+            os.path.join(get_gopath(), "bin", "determined-master"),
+            "--config-file",
+            config_path,
+            "--root",
+            "build/share/determined/master",
+        ]
+
+        custom_config = CustomConfig({
+            "cmd": cmd,
+            "name": "master",
+            "pre": [{"custom": ["make", "-C", "master", "build-files", "install-native"]}],
+            # TODO: don't hardcode 8080
+            "post": [{"conncheck": {"port": 8080}}],
+        })
+
+        return Process(custom_config, poll, logger, state_machine)
+
+
+class AgentConfig(StageConfig):
+    def __init__(self, config):
+        self.config = config or {"master_host": "localhost", "master_port": 8080}
+        self.name = "agent"
+
+    def build_stage(self, poll, logger, state_machine):
+        config_path = "/tmp/devcluster-agent.conf"
+        with open(config_path, "w") as f:
+            f.write(yaml.dump(self.config))
+
+        cmd = [
+            os.path.join(get_gopath(), "bin", "determined-agent"),
+            "run",
+            "--config-file",
+            config_path,
+        ]
+
+        custom_config = CustomConfig({
+            "cmd": cmd,
+            "name": "agent",
+            "pre": [{"custom": ["make", "-C", "agent", "install-native"]}],
+        })
+
+        return Process(custom_config, poll, logger, state_machine)
+
+
+class ConnCheckConfig:
+    def __init__(self, config):
+        allowed = {"host", "port"}
+        required = {"port"}
+        check_keys(allowed, required, config, type(self).__name__)
+
+        self.host = config.get("host", "localhost")
+        self.port = config["port"]
+
+    def build_atomic(self, poll, log, report_fd):
+        return ConnCheck(self.host, self.port, report_fd)
+
+
+class CustomAtomicConfig:
+    def __init__(self, config):
+        check_list_of_strings(config, "AtomicConfig.custom must be a list of strings")
+        self.cmd = config
+
+    def build_atomic(self, poll, log, report_fd):
+        return AtomicSubprocess(poll, log, report_fd, self.cmd)
+
+
+class CustomConfig(StageConfig):
+    def __init__(self, config):
+        allowed = {"cmd", "name", "pre", "post", "kill"}
+        required = {"cmd", "name"}
+
+        check_keys(allowed, required, config, type(self).__name__)
+
+        self.cmd = config["cmd"]
+        check_list_of_strings(self.cmd, "CustomConfig.cmd must be a list of strings")
+
+        self.name = config["name"]
+        assert isinstance(self.name, str), "CustomConfig.name msut be a string"
+
+        self.kill = config.get("kill", [])
+        check_list_of_strings(self.kill, "CustomConfig.kill must be a list of strings")
+
+        check_list_of_dicts(config.get("pre", []), "CustomConfig.pre must be a list of dicts")
+        self.pre = [AtomicConfig.read(pre) for pre in config.get("pre", [])]
+
+        check_list_of_dicts(config.get("post", []), "CustomConfig.post must be a list of dicts")
+        self.post = [AtomicConfig.read(post) for post in config.get("post", [])]
+
+    def build_stage(self, poll, logger, state_machine):
+        return Process(self, poll, logger, state_machine)
+
+
+class Config:
+    def __init__(self, config):
+        allowed = {"stages"}
+        required = {"stages"}
+        check_keys(allowed, required, config, type(self).__name__)
+
+        check_list_of_dicts(config["stages"], "stages must be a list of dicts")
+        self.stages = [StageConfig.read(stage) for stage in config["stages"]]
+
+
+def main(config):
+
     with terminal_config():
         poll = Poll()
 
-        logger = Logger(["console", "db", "hasura", "master", "agent"])
+        stage_names = [stage_config.name for stage_config in config.stages]
+
+        logger = Logger(stage_names)
 
         state_machine = StateMachine(logger, poll)
 
         console = Console(logger, poll, state_machine)
 
-        state_machine.add_stage(DB(poll, logger, state_machine))
-        state_machine.add_stage(Hasura(poll, logger, state_machine))
-        state_machine.add_stage(Master(poll, logger, state_machine))
-        state_machine.add_stage(Agent(poll, logger, state_machine))
+        for stage_config in config.stages:
+            state_machine.add_stage(stage_config.build_stage(poll, logger, state_machine))
 
-        state_machine.set_target(4)
+        state_machine.set_target(len(stage_names))
 
         while state_machine.should_run():
             poll.poll()
 
 
 if __name__ == "__main__":
-    main(sys.argv)
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-c', '--config', dest='config', action='store')
+    args = parser.parse_args()
+
+    # Read config before the chdir()
+    if args.config is not None:
+        with open(args.config) as f:
+            config = Config(yaml.safe_load(f.read()))
+    else:
+        default_path = os.path.expanduser("~/.devcluster.yaml")
+        if not os.path.exists(default_path):
+            print("you must either specify --config or have a {default_path}", file=sys.stderr)
+        with open(default_path) as f:
+            config = Config(yaml.safe_load(f.read()))
+
+    get_gopath()
+
+    if "DET_ROOT" not in os.environ:
+        print("you must specify the DET_ROOT environment variable", file=sys.stderr)
+        sys.exit(1)
+    os.chdir(os.environ["DET_ROOT"])
+
+    main(config)
