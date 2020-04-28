@@ -252,12 +252,12 @@ class BuildOperation(AtomicOperation):
             success = False
 
             if self.dying:
-                self.log("NDET: build canceled\n", self.log_name)
+                self.log(" ----- build canceled -----\n", self.log_name)
             elif ret != 0:
-                self.log(f"NDET: build exited with {ret}\n", self.log_name)
+                self.log(f" ----- build exited with {ret} -----\n", self.log_name)
             else:
                 build_time = time.time() - self.start_time
-                self.log(" ----- build complete! (%.2fs) ----- \n"%(build_time), self.log_name)
+                self.log(" ----- build complete! (%.2fs) -----\n"%(build_time), self.log_name)
                 success = True
 
             os.write(self.report_fd, self.success_msg if success else b'FAIL')
@@ -292,16 +292,16 @@ class Process:
     """
     A long-running process may have precommands to run first and postcommands before it is ready.
     """
-    def __init__(self, poll, log, log_name, cmd, set_target, next_thing):
+    def __init__(self, poll, logger, state_machine, log_name, cmd):
         self.proc = None
         self.out = None
         self.err = None
         self.dying = False
 
         self.poll = poll
-        self.log = log
-        self.next_thing = next_thing
-        self.set_target = set_target
+        self.log = logger.log
+        self.state_machine = state_machine
+
         self.cmd = cmd
         self.log_name = log_name
 
@@ -309,15 +309,15 @@ class Process:
         """wait() on proc if both stdout and stderr are empty."""
         if not self.dying:
             self.log(f"{self.log_name} closing unexpectedly!\n")
-            self.set_target(States.DEAD)
+            self.state_machine.set_target(States.DEAD)
 
         if self.out is None and self.err is None:
             ret = self.proc.wait()
             self.log(f"{self.log_name} exited with {ret}\n")
-            self.log(f"NDET: {self.log_name} exited with {ret}\n", self.log_name)
+            self.log(f" ----- {self.log_name} exited with {ret} -----\n", self.log_name)
             self.proc = None
             self._reset()
-            self.next_thing()
+            self.state_machine.next_thing()
 
     def _handle_out(self, ev):
         if ev & Poll.IN_FLAGS:
@@ -391,10 +391,9 @@ docker run
 ''').strip().split()
 
 class DB(Process):
-    def __init__(self, poll, log, pipe_wr, set_target, next_thing):
-        super().__init__(poll, log, "db", DB_CMD, set_target, next_thing)
+    def __init__(self, poll, logger, state_machine):
+        super().__init__(poll, logger, state_machine, "db", DB_CMD)
 
-        self.pipe_wr = pipe_wr
         self._reset()
 
     def _reset(self):
@@ -409,7 +408,7 @@ class DB(Process):
 
         self.postcmd_has_run = True
 
-        return ConnCheck("localhost", 5432, self.pipe_wr, "DB")
+        return ConnCheck("localhost", 5432, self.state_machine.get_report_fd(), "DB")
 
     def kill(self):
         # TODO: figure out how to use real signals here instead.
@@ -441,10 +440,9 @@ docker run -p 8081:8080 --rm
 '''.strip().split()
 
 class Hasura(Process):
-    def __init__(self, poll, log, pipe_wr, set_target, next_thing):
-        super().__init__(poll, log, "hasura", HASURA_CMD, set_target, next_thing)
+    def __init__(self, poll, logger, state_machine):
+        super().__init__(poll, logger, state_machine, "hasura", HASURA_CMD)
 
-        self.pipe_wr = pipe_wr
         self._reset()
 
     def _reset(self):
@@ -459,7 +457,7 @@ class Hasura(Process):
 
         self.postcmd_has_run = True
 
-        return ConnCheck("localhost", 8081, self.pipe_wr, "HASURA")
+        return ConnCheck("localhost", 8081, self.state_machine.get_report_fd(), "HASURA")
 
     def kill(self):
         # TODO: figure out how to use real signals here instead.
@@ -500,10 +498,9 @@ MASTER_CMD = [
 
 
 class Master(Process):
-    def __init__(self, poll, log, pipe_wr, set_target, next_thing):
-        super().__init__(poll, log, "master", MASTER_CMD, set_target, next_thing)
+    def __init__(self, poll, logger, state_machine):
+        super().__init__(poll, logger, state_machine, "master", MASTER_CMD)
 
-        self.pipe_wr = pipe_wr
         self._reset()
 
     def _reset(self):
@@ -517,7 +514,7 @@ class Master(Process):
         self.precmd_has_run = True
 
         return BuildOperation(
-            MASTER_BUILD_CMD, self.poll, self.log, "master", self.pipe_wr, "MASTER_BUILD"
+            MASTER_BUILD_CMD, self.poll, self.log, "master", self.state_machine.get_report_fd(), "MASTER_BUILD"
         )
 
     def get_postcommand(self):
@@ -526,7 +523,7 @@ class Master(Process):
 
         self.postcmd_has_run = True
 
-        return ConnCheck("localhost", 8080, self.pipe_wr, "MASTER")
+        return ConnCheck("localhost", 8080, self.state_machine.get_report_fd(), "MASTER")
 
 
 AGENT_BUILD_CMD = [
@@ -546,10 +543,9 @@ AGENT_CMD = [
 
 
 class Agent(Process):
-    def __init__(self, poll, log, pipe_wr, set_target, next_thing):
-        super().__init__(poll, log, "agent", AGENT_CMD, set_target, next_thing)
+    def __init__(self, poll, logger, state_machine):
+        super().__init__(poll, logger, state_machine, "agent", AGENT_CMD)
 
-        self.pipe_wr = pipe_wr
         self._reset()
 
     def _reset(self):
@@ -562,15 +558,35 @@ class Agent(Process):
         self.precmd_has_run = True
 
         return BuildOperation(
-            AGENT_BUILD_CMD, self.poll, self.log, "agent", self.pipe_wr, "AGENT_BUILD"
+            AGENT_BUILD_CMD, self.poll, self.log, "agent", self.state_machine.get_report_fd(), "AGENT_BUILD"
         )
 
     def get_postcommand(self):
         return None
 
 
-class NDet:
-    def __init__(self):
+class Logger:
+    def __init__(self, streams):
+        self.streams = {stream:b"" for stream in streams}
+        self.callbacks = []
+
+    def log(self, msg, stream="console"):
+        """Append to a log stream."""
+
+        msg = asbytes(msg)
+        self.streams[stream] += msg
+
+        for cb in self.callbacks:
+            cb(msg, stream)
+
+    def add_callback(self, cb):
+        self.callbacks.append(cb)
+
+
+class StateMachine:
+    def __init__(self, logger, poll):
+        self.logger = logger
+
         self.quitting = False
 
         # atomic_op is intermediate steps like calling `make` or connecting to a server.
@@ -579,54 +595,27 @@ class NDet:
 
         # the pipe is used by the atomic_op to pass messages to the poll loop
         self.pipe_rd, self.pipe_wr = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
-
-        self.poll = Poll()
-
-        self.poll.register(sys.stdin.fileno(), Poll.IN_FLAGS, self.handle_stdin)
-        self.poll.register(self.pipe_rd, Poll.IN_FLAGS, self.handle_pipe)
+        poll.register(self.pipe_rd, Poll.IN_FLAGS, self.handle_pipe)
 
         self.state = States.DEAD
         self.target = States.DEAD
 
-        self.logs = {
-            "ndet": b"",
-            "db": b"",
-            "hasura": b"",
-            "master": b"",
-            "agent": b"",
-        }
-        self.active_stream = ""
+        self.old_status = (self.state, self.atomic_op, self.target)
 
-        self.set_active_stream("master")
+        self.callbacks = []
 
-        self.db = DB(self.poll, self.log, self.pipe_wr, self.set_target, self.next_thing)
-        self.hasura = Hasura(self.poll, self.log, self.pipe_wr, self.set_target, self.next_thing)
-        self.master = Master(self.poll, self.log, self.pipe_wr, self.set_target, self.next_thing)
-        self.agent = Agent(self.poll, self.log, self.pipe_wr, self.set_target, self.next_thing)
+    # TODO: clean up lazy initialization
+    def set_stages(self, db, hasura, master, agent):
+        self.db = db
+        self.hasura = hasura
+        self.master = master
+        self.agent = agent
 
+    def get_report_fd(self):
+        return self.pipe_wr
 
-    def log(self, msg, stream="ndet"):
-        """Append to a log stream."""
-
-        msg = asbytes(msg)
-
-        self.logs[stream] += msg
-        if self.active_stream == stream:
-            os.write(sys.stdout.fileno(), msg)
-
-        self.print_bar()
-
-    def set_active_stream(self, new_stream):
-        if new_stream == self.active_stream:
-            return
-
-        self.erase_screen()
-        self.place_cursor(2, 1)
-        # dump logs
-        os.write(sys.stdout.fileno(), self.logs[new_stream][-16*1024:])
-        self.print_bar()
-
-        self.active_stream = new_stream
+    def add_callback(self, cb):
+        self.callbacks.append(cb)
 
     def advance_process(self, process):
         """
@@ -649,13 +638,7 @@ class NDet:
             self.atomic_op = atomic_op
             return
 
-    def next_thing(self):
-        """
-        Should be called either when:
-          - a new transition is set
-          - an atomic operation completes
-          - a long-running process is closed
-        """
+    def _next_thing(self):
         # Possibly further some atomic operations in the current state.
         if self.state == self.target:
             if self.state == States.DB:
@@ -734,6 +717,23 @@ class NDet:
             else:
                 raise NotImplementedError()
 
+    def next_thing(self):
+        """
+        Should be called either when:
+          - a new transition is set
+          - an atomic operation completes
+          - a long-running process is closed
+        """
+        self._next_thing()
+
+        # Notify changes of state.
+        new_status = (self.state, self.atomic_op, self.target)
+        if self.old_status != new_status:
+            atomic_str = str(self.atomic_op) if self.atomic_op else ""
+            for cb in self.callbacks:
+                cb(str(self.state), atomic_str, str(self.target))
+            self.old_status = new_status
+
     def set_target(self, target):
         """For when you choose a new target state."""
         if target == self.target:
@@ -743,11 +743,113 @@ class NDet:
 
         self.next_thing()
 
+    def quit(self):
+        # Raise an error on the second try.
+        if self.quitting:
+            raise ValueError("quitting forcibly")
+        # Exit gracefully on the first try.
+        self.logger.log("quitting...\n")
+        self.quitting = True
+        self.set_target(States.DEAD)
+
     def transition(self, new_state):
         """For when you arrive at a new state."""
         self.state = new_state
 
         self.next_thing()
+
+    def handle_pipe(self, ev):
+        self.atomic_op.join()
+        self.atomic_op = None
+
+        if ev & Poll.IN_FLAGS:
+            msg = os.read(self.pipe_rd, 4096).decode("utf8")
+            if msg == "FAIL":
+                # set the target state to be one less than wherever-we-are
+                self.target = min(self.state - 1, self.target)
+
+            self.next_thing()
+
+        if ev & Poll.ERR_FLAGS:
+            # Just die.
+            raise ValueError("pipe failed!")
+
+    def should_run(self):
+        return not (self.quitting and self.state == States.DEAD)
+
+
+class Console:
+    def __init__(self, logger, poll, state_machine):
+        self.logger = logger
+        self.logger.add_callback(self.log_cb)
+
+        self.poll = poll
+        self.poll.register(sys.stdin.fileno(), Poll.IN_FLAGS, self.handle_stdin)
+
+        self.state_machine = state_machine
+        state_machine.add_callback(self.state_cb)
+
+        self.state_msg = b"uninitialized"
+
+        self.active_stream = ""
+
+        # set_active_stream will trigger the print_bar() operation
+        self.set_active_stream("master")
+
+    def set_active_stream(self, new_stream):
+        if new_stream == self.active_stream:
+            return
+
+        self.erase_screen()
+        self.place_cursor(2, 1)
+        # dump logs
+        os.write(sys.stdout.fileno(), self.logger.streams[new_stream][-16*1024:])
+        self.print_bar()
+
+        self.active_stream = new_stream
+
+    def log_cb(self, msg, stream):
+        if self.active_stream == stream:
+            os.write(sys.stdout.fileno(), msg)
+            self.print_bar()
+
+    def state_cb(self, state, substate, target):
+        state_msg = state + (f"({substate})" if substate else "")
+        msg = f"state:{state_msg} target:{target} stream:{self.active_stream}".encode("utf8")
+        self.state_msg = msg
+        self.print_bar()
+
+    def handle_stdin(self, ev):
+        c = sys.stdin.read(1)
+        if c == '\x03':
+            self.state_machine.quit()
+        elif c == "q":
+            self.state_machine.quit()
+        elif c == "d":
+            self.set_active_stream("db")
+        elif c == "h":
+            self.set_active_stream("hasura")
+        elif c == "m":
+            self.set_active_stream("master")
+        elif c == "a":
+            self.set_active_stream("agent")
+        elif c == "c":
+            self.set_active_stream("console")
+        elif c == "1":
+            self.state_machine.set_target(States.DEAD)
+            self.logger.log("set target dead!\n")
+        elif c == "2":
+            self.state_machine.set_target(States.DB)
+            self.logger.log("set target db!\n")
+        elif c == "3":
+            self.state_machine.set_target(States.HASURA)
+            self.logger.log("set target hasura!\n")
+        elif c == "4":
+            self.state_machine.set_target(States.MASTER)
+            self.logger.log("set target master!\n")
+        elif c == "5":
+            self.state_machine.set_target(States.AGENT)
+            self.logger.log("set target agent!\n")
 
     def get_cursor_pos(self):
         os.write(1, b'\x1b[6n')
@@ -774,73 +876,32 @@ class NDet:
         _, row, col = self.get_cursor_pos()
         self.place_cursor(1, 1)
         self.erase_line()
-        state_msg = str(self.state) + (f"({self.atomic_op})" if self.atomic_op is not None else "")
-        msg = f"state:{state_msg} target:{self.target} stream:{self.active_stream}".encode("utf8")
-        os.write(sys.stdout.fileno(), invert_colors(msg))
+        os.write(sys.stdout.fileno(), invert_colors(self.state_msg))
         self.place_cursor(row, col)
 
-    def run(self):
-        self.set_target(States.AGENT)
-        while not (self.quitting and self.state == States.DEAD):
-            self.print_bar()
-            self.poll.poll()
 
-    def handle_stdin(self, ev):
-        c = sys.stdin.read(1)
-        if c == '\x03':
-            # Raise an error on the second try.
-            if self.quitting:
-                raise KeyboardInterrupt()
-            # Exit gracefully on the first try.
-            self.log("quitting...\n")
-            self.quitting = True
-            self.set_target(States.DEAD)
-        elif c == "q":
-            self.log("quitting...\n")
-            self.quitting = True
-            self.set_target(States.DEAD)
-        elif c == "d":
-            self.set_active_stream("db")
-        elif c == "h":
-            self.set_active_stream("hasura")
-        elif c == "m":
-            self.set_active_stream("master")
-        elif c == "a":
-            self.set_active_stream("agent")
-        elif c == "c":
-            self.set_active_stream("ndet")
-        elif c == "1":
-            self.set_target(States.DEAD)
-            self.log("set target dead!\n")
-        elif c == "2":
-            self.set_target(States.DB)
-            self.log("set target db!\n")
-        elif c == "3":
-            self.set_target(States.HASURA)
-            self.log("set target hasura!\n")
-        elif c == "4":
-            self.set_target(States.MASTER)
-            self.log("set target master!\n")
-        elif c == "5":
-            self.set_target(States.AGENT)
-            self.log("set target agent!\n")
+def main(argv):
+    with terminal_config():
+        poll = Poll()
 
-    def handle_pipe(self, ev):
-        self.atomic_op.join()
-        self.atomic_op = None
+        logger = Logger(["console", "db", "hasura", "master", "agent"])
 
-        if ev & Poll.IN_FLAGS:
-            msg = os.read(self.pipe_rd, 4096).decode("utf8")
-            if msg == "FAIL":
-                # set the target state to be one less than wherever-we-are
-                self.target = max(self.state - 1, self.target)
+        state_machine = StateMachine(logger, poll)
 
-            self.next_thing()
+        console = Console(logger, poll, state_machine)
 
-        if ev & Poll.ERR_FLAGS:
-            # Just die.
-            raise ValueError("pipe failed!")
+        state_machine.set_stages(
+            DB(poll, logger, state_machine),
+            Hasura(poll, logger, state_machine),
+            Master(poll, logger, state_machine),
+            Agent(poll, logger, state_machine),
+        )
+
+        state_machine.set_target(States.AGENT)
+
+        while state_machine.should_run():
+            poll.poll()
+
 
 if __name__ == "__main__":
-    with terminal_config():
-        NDet().run()
+    main(sys.argv)
