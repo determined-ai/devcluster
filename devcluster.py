@@ -48,26 +48,6 @@ def invert_colors(msg):
     return b'\x1b[7m' + msg + b'\x1b[0m'
 
 
-MASTER_CMD = [
-    os.path.join(os.path.expanduser("~/go/bin"), "determined-master"),
-    "--log-level", "debug",
-    "--db-user", "postgres",
-    "--db-port", "5432",
-    "--db-name", "pedl",
-    "--db-password=jAmGMeVw3ycU2Ft",
-    "--hasura-secret=ML7hq3Lyuxv4qUb",
-    "--root", os.path.expanduser("~/code/determined/build/share/determined/master"),
-]
-
-
-AGENT_CMD = [
-    os.path.join(os.path.expanduser("~/go/bin"), "determined-agent"),
-    "--master-host", "192.168.0.4",
-    "--master-port", "8080",
-    "run"
-]
-
-
 class States(enum.Enum):
     DEAD = "DEAD"
     DB = "DB"
@@ -198,6 +178,9 @@ class ConnCheck(threading.Thread):
 
         super().__init__()
 
+        # AtomicOperations should not need a start() call.
+        self.start()
+
     def __str__(self):
         return "connecting"
 
@@ -228,6 +211,81 @@ class ConnCheck(threading.Thread):
 
     def cancel(self):
         self.quit = True
+
+
+class BuildOperation(AtomicOperation):
+    """BuildOperation is an AtomicOperation."""
+
+    def __init__(self, build_cmd, poll, log, log_name, report_fd, success_msg):
+        self.poll = poll
+        self.log = log
+        self.log_name = log_name
+
+        self.report_fd = report_fd
+        self.success_msg = asbytes(success_msg)
+        self.start_time = time.time()
+
+        self.dying = False
+        self.proc = subprocess.Popen(
+            build_cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.out = self.proc.stdout.fileno()
+        self.err = self.proc.stderr.fileno()
+
+        nonblock(self.out)
+        nonblock(self.err)
+
+        self.poll.register(self.out, Poll.IN_FLAGS, self._handle_out)
+        self.poll.register(self.err, Poll.IN_FLAGS, self._handle_err)
+
+    def __str__(self):
+        return "building"
+
+    def _maybe_wait(self):
+        """Only respond after both stdout and stderr have closed."""
+        if self.out is None and self.err is None:
+            ret = self.proc.wait()
+            self.proc = None
+            success = False
+
+            if self.dying:
+                self.log("NDET: build canceled\n", self.log_name)
+            elif ret != 0:
+                self.log(f"NDET: build exited with {ret}\n", self.log_name)
+            else:
+                build_time = time.time() - self.start_time
+                self.log(" ----- build complete! (%.2fs) ----- \n"%(build_time), self.log_name)
+                success = True
+
+            os.write(self.report_fd, self.success_msg if success else b'FAIL')
+
+    def _handle_out(self, ev):
+        if ev & Poll.IN_FLAGS:
+            self.log(os.read(self.out, 4096), self.log_name)
+        if ev & Poll.ERR_FLAGS:
+            self.poll.unregister(self._handle_out)
+            os.close(self.out)
+            self.out = None
+            self._maybe_wait()
+
+    def _handle_err(self, ev):
+        if ev & Poll.IN_FLAGS:
+            self.log(os.read(self.err, 4096), self.log_name)
+        if ev & Poll.ERR_FLAGS:
+            self.poll.unregister(self._handle_err)
+            os.close(self.err)
+            self.err = None
+            self._maybe_wait()
+
+    def cancel(self):
+        self.dying = True
+        self.proc.kill()
+
+    def join(self):
+        pass
 
 
 class Process:
@@ -351,9 +409,7 @@ class DB(Process):
 
         self.postcmd_has_run = True
 
-        atomic_op = ConnCheck("localhost", 5432, self.pipe_wr, "DB")
-        atomic_op.start()
-        return atomic_op
+        return ConnCheck("localhost", 5432, self.pipe_wr, "DB")
 
     def kill(self):
         # TODO: figure out how to use real signals here instead.
@@ -403,9 +459,7 @@ class Hasura(Process):
 
         self.postcmd_has_run = True
 
-        atomic_op = ConnCheck("localhost", 8081, self.pipe_wr, "HASURA")
-        atomic_op.start()
-        return atomic_op
+        return ConnCheck("localhost", 8081, self.pipe_wr, "HASURA")
 
     def kill(self):
         # TODO: figure out how to use real signals here instead.
@@ -424,6 +478,27 @@ class Hasura(Process):
             self.log(b"docker kill says:\n" + asbytes(err))
 
 
+MASTER_BUILD_CMD = [
+    "make",
+    "-C",
+    os.path.expanduser("~/code/determined/master"),
+    "build-files",
+    "install-native",
+]
+
+
+MASTER_CMD = [
+    os.path.join(os.path.expanduser("~/go/bin"), "determined-master"),
+    "--log-level", "debug",
+    "--db-user", "postgres",
+    "--db-port", "5432",
+    "--db-name", "pedl",
+    "--db-password=jAmGMeVw3ycU2Ft",
+    "--hasura-secret=ML7hq3Lyuxv4qUb",
+    "--root", os.path.expanduser("~/code/determined/build/share/determined/master"),
+]
+
+
 class Master(Process):
     def __init__(self, poll, log, pipe_wr, set_target, next_thing):
         super().__init__(poll, log, "master", MASTER_CMD, set_target, next_thing)
@@ -432,10 +507,18 @@ class Master(Process):
         self._reset()
 
     def _reset(self):
+        self.precmd_has_run = False
         self.postcmd_has_run = False
 
     def get_precommand(self):
-        return None
+        if self.precmd_has_run:
+            return None
+
+        self.precmd_has_run = True
+
+        return BuildOperation(
+            MASTER_BUILD_CMD, self.poll, self.log, "master", self.pipe_wr, "MASTER_BUILD"
+        )
 
     def get_postcommand(self):
         if self.postcmd_has_run:
@@ -443,20 +526,44 @@ class Master(Process):
 
         self.postcmd_has_run = True
 
-        atomic_op = ConnCheck("localhost", 8080, self.pipe_wr, "MASTER")
-        atomic_op.start()
-        return atomic_op
+        return ConnCheck("localhost", 8080, self.pipe_wr, "MASTER")
+
+
+AGENT_BUILD_CMD = [
+    "make",
+    "-C",
+    os.path.expanduser("~/code/determined/agent"),
+    "install-native",
+]
+
+
+AGENT_CMD = [
+    os.path.join(os.path.expanduser("~/go/bin"), "determined-agent"),
+    "--master-host", "192.168.0.4",
+    "--master-port", "8080",
+    "run"
+]
 
 
 class Agent(Process):
-    def __init__(self, poll, log, set_target, next_thing):
+    def __init__(self, poll, log, pipe_wr, set_target, next_thing):
         super().__init__(poll, log, "agent", AGENT_CMD, set_target, next_thing)
 
+        self.pipe_wr = pipe_wr
+        self._reset()
+
     def _reset(self):
-        pass
+        self.precmd_has_run = False
 
     def get_precommand(self):
-        return None
+        if self.precmd_has_run:
+            return None
+
+        self.precmd_has_run = True
+
+        return BuildOperation(
+            AGENT_BUILD_CMD, self.poll, self.log, "agent", self.pipe_wr, "AGENT_BUILD"
+        )
 
     def get_postcommand(self):
         return None
@@ -466,8 +573,10 @@ class NDet:
     def __init__(self):
         self.quitting = False
 
-        # atomic_op is intermediate steps like calling `make` or connecting to a server
+        # atomic_op is intermediate steps like calling `make` or connecting to a server.
+        # We only support having one run at a time (since they're atomic...)
         self.atomic_op = None
+
         # the pipe is used by the atomic_op to pass messages to the poll loop
         self.pipe_rd, self.pipe_wr = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
 
@@ -493,7 +602,7 @@ class NDet:
         self.db = DB(self.poll, self.log, self.pipe_wr, self.set_target, self.next_thing)
         self.hasura = Hasura(self.poll, self.log, self.pipe_wr, self.set_target, self.next_thing)
         self.master = Master(self.poll, self.log, self.pipe_wr, self.set_target, self.next_thing)
-        self.agent = Agent(self.poll, self.log, self.set_target, self.next_thing)
+        self.agent = Agent(self.poll, self.log, self.pipe_wr, self.set_target, self.next_thing)
 
 
     def log(self, msg, stream="ndet"):
