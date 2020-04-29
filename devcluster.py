@@ -47,11 +47,8 @@ def terminal_config():
         os.write(sys.stdout.fileno(), b'\x1b[?1049l')
 
 
-def invert_colors(msg):
-    return b'\x1b[7m' + msg + b'\x1b[0m'
-
-
 _gopath = None
+
 def get_gopath():
     global _gopath
     if _gopath is None:
@@ -60,6 +57,47 @@ def get_gopath():
         assert p.wait() == 0
     return _gopath
 
+
+_save_cursor = None
+
+def save_cursor():
+    global _save_cursor
+    if _save_cursor is None:
+        p = subprocess.Popen(["tput", "sc"], stdout=subprocess.PIPE)
+        _save_cursor = p.stdout.read().strip()
+        assert p.wait() == 0
+    return _save_cursor
+
+
+_restore_cursor = None
+
+def restore_cursor():
+    global _restore_cursor
+    if _restore_cursor is None:
+        p = subprocess.Popen(["tput", "rc"], stdout=subprocess.PIPE)
+        _restore_cursor = p.stdout.read().strip()
+        assert p.wait() == 0
+    return _restore_cursor
+
+
+_cols = None
+# Debounce calls to tput
+_cols_time = 0
+
+def get_cols():
+    global _cols_time, _cols
+    if _cols is None or (time.time() - _cols_time) > 0.1:
+        p = subprocess.Popen(["tput", "cols"], stdout=subprocess.PIPE)
+        _cols = int(p.stdout.read().strip())
+        assert p.wait() == 0
+    return _cols
+
+
+def get_rows():
+    p = subprocess.Popen(["tput", "rows"], stdout=subprocess.PIPE)
+    rows = int(p.stdout.read().strip())
+    assert p.wait() == 0
+    return rows
 
 
 def asbytes(msg):
@@ -204,12 +242,12 @@ class AtomicSubprocess(AtomicOperation):
             success = False
 
             if self.dying:
-                self.log(" ----- {self} canceled -----\n")
+                self.log(f" ----- {self} canceled -----\n")
             elif ret != 0:
                 self.log(f" ----- {self} exited with {ret} -----\n")
             else:
                 build_time = time.time() - self.start_time
-                self.log(" ----- {self} complete! (%.2fs) -----\n"%(build_time))
+                self.log(f" ----- {self} complete! (%.2fs) -----\n"%(build_time))
                 success = True
 
             os.write(self.report_fd, b'SUCCESS' if success else b'FAIL')
@@ -241,10 +279,6 @@ class AtomicSubprocess(AtomicOperation):
 
 
 class Stage:
-    @abc.abstractmethod
-    def get_precommand(self):
-        pass
-
     @abc.abstractmethod
     def run_command(self):
         pass
@@ -357,8 +391,12 @@ class Process(Stage):
         if self.precmds_run < len(self.config.pre):
             precmd_config = self.config.pre[self.precmds_run]
             self.precmds_run += 1
+
+            def atomic_log(msg):
+                self.log(msg, self.log_name())
+
             return precmd_config.build_atomic(
-                self.poll, self.log, self.state_machine.get_report_fd()
+                self.poll, atomic_log, self.state_machine.get_report_fd()
             )
         return None
 
@@ -366,8 +404,12 @@ class Process(Stage):
         if self.postcmds_run < len(self.config.post):
             postcmd_config = self.config.post[self.postcmds_run]
             self.postcmds_run += 1
+
+            def atomic_log(msg):
+                self.log(msg, self.log_name())
+
             return postcmd_config.build_atomic(
-                self.poll, self.log, self.state_machine.get_report_fd()
+                self.poll, atomic_log, self.state_machine.get_report_fd()
             )
         return None
 
@@ -421,15 +463,17 @@ class Process(Stage):
 
 class Logger:
     def __init__(self, streams):
-        self.streams = {stream: b"" for stream in streams}
-        self.streams["console"] = b""
+        all_streams = ["console"] + streams
+        self.streams = {stream: [] for stream in all_streams}
+        self.index = {i: stream for i, stream in enumerate(all_streams)}
         self.callbacks = []
 
     def log(self, msg, stream="console"):
         """Append to a log stream."""
 
+        now = time.time()
         msg = asbytes(msg)
-        self.streams[stream] += msg
+        self.streams[stream].append((now, msg))
 
         for cb in self.callbacks:
             cb(msg, stream)
@@ -584,6 +628,21 @@ class StateMachine:
         return not (self.quitting and self.state == 0)
 
 
+def fore_rgb(rgb):
+    return b'\x1b[38;2;%d;%d;%dm'%(rgb >> 16, (rgb & 0xff00) >> 8, rgb & 0xff)
+
+def fore_num(num):
+    return b'\x1b[38;5;%dm'%(num)
+
+def back_rgb(rgb):
+    return b'\x1b[48;2;%d;%d;%dm'%(rgb >> 16, (rgb & 0xff00) >> 8, rgb & 0xff)
+
+def back_num(num):
+    return b'\x1b[48;5;%dm'%(num)
+
+res = b'\x1b[m'
+
+
 class Console:
     def __init__(self, logger, poll, state_machine):
         self.logger = logger
@@ -595,35 +654,65 @@ class Console:
         self.state_machine = state_machine
         state_machine.add_callback(self.state_cb)
 
-        self.state_msg = b"uninitialized"
+        self.status = ("state", "substate", "target")
 
-        self.active_stream = ""
+        self.active_streams = set()
+        for stream in ["db", "master", "agent"]:
+            if stream in self.logger.streams:
+                self.active_streams.add(stream)
 
-        # set_active_stream will trigger the print_bar() operation
-        self.set_active_stream("master")
+        self.redraw()
 
-    def set_active_stream(self, new_stream):
-        if new_stream == self.active_stream:
-            return
+    def redraw(self):
+        # assume at least 1 in 2 log packets has a newline (we just need to fill up a screen)
+        tail_len = get_cols() * 2
+
+        # build new log output
+        new_logs = []
+        for stream in self.active_streams:
+            new_logs.extend(self.logger.streams[stream][-tail_len:])
+        # sort the streams chronologically
+        new_logs.sort(key=lambda x: x[0])
 
         self.erase_screen()
         self.place_cursor(2, 1)
-        # dump logs
-        os.write(sys.stdout.fileno(), self.logger.streams[new_stream][-16*1024:])
+
+        os.write(sys.stdout.fileno(), b"".join(x[1] for x in new_logs))
         self.print_bar()
 
-        self.active_stream = new_stream
+    def set_stream(self, stream, val):
+        if isinstance(stream, int):
+            stream = self.logger.index[stream]
+
+        if val is None:
+            # toggle when val is None
+            val = not stream in self.active_streams
+
+        if val:
+            self.active_streams.add(stream)
+        else:
+            self.active_streams.remove(stream)
+
+        self.redraw()
 
     def log_cb(self, msg, stream):
-        if self.active_stream == stream:
+        if stream in self.active_streams:
             os.write(sys.stdout.fileno(), msg)
             self.print_bar()
 
     def state_cb(self, state, substate, target):
-        state_msg = state + (f"({substate})" if substate else "")
-        msg = f"state:{state_msg} target:{target} stream:{self.active_stream}".encode("utf8")
-        self.state_msg = msg
+        self.status = (state, substate, target)
         self.print_bar()
+
+    def try_set_target(self, idx):
+        if idx >= len(self.state_machine.stages):
+            return
+        self.state_machine.set_target(idx)
+
+    def try_toggle_stream(self, idx):
+        if idx not in self.logger.index:
+            return
+        self.set_stream(idx, None)
 
     def handle_stdin(self, ev):
         c = sys.stdin.read(1)
@@ -631,43 +720,50 @@ class Console:
             self.state_machine.quit()
         elif c == "q":
             self.state_machine.quit()
-        elif c == "d":
-            self.set_active_stream("db")
-        elif c == "h":
-            self.set_active_stream("hasura")
-        elif c == "m":
-            self.set_active_stream("master")
-        elif c == "a":
-            self.set_active_stream("agent")
-        elif c == "c":
-            self.set_active_stream("console")
-        elif c == "0":
-            self.state_machine.set_target(0)
-            self.logger.log("set target dead!\n")
-        elif c == "1":
-            self.state_machine.set_target(1)
-            self.logger.log("set target db!\n")
-        elif c == "2":
-            self.state_machine.set_target(2)
-            self.logger.log("set target hasura!\n")
-        elif c == "3":
-            self.state_machine.set_target(3)
-            self.logger.log("set target master!\n")
-        elif c == "4":
-            self.state_machine.set_target(4)
-            self.logger.log("set target agent!\n")
 
-    def get_cursor_pos(self):
-        os.write(1, b'\x1b[6n')
-        buf = b''
-        while True:
-            buf += os.read(sys.stdin.fileno(), 1)
-            if b'R' in buf:
-                break
-        esc = buf.index(b'\x1b')
-        semi = buf.index(b';')
-        R = buf.index(b'R')
-        return buf[:esc], int(buf[esc+2:semi]), int(buf[semi+1:R])
+        # 0-9: set target state
+        elif c == "0":
+            self.try_set_target(0)
+        elif c == "1":
+            self.try_set_target(1)
+        elif c == "2":
+            self.try_set_target(2)
+        elif c == "3":
+            self.try_set_target(3)
+        elif c == "4":
+            self.try_set_target(4)
+        elif c == "5":
+            self.try_set_target(5)
+        elif c == "6":
+            self.try_set_target(6)
+        elif c == "7":
+            self.try_set_target(7)
+        elif c == "8":
+            self.try_set_target(8)
+        elif c == "9":
+            self.try_set_target(9)
+
+        # shift + 0-9: toggle logs
+        elif c == ")":
+            self.try_toggle_stream(0)
+        elif c == "!":
+            self.try_toggle_stream(1)
+        elif c == "@":
+            self.try_toggle_stream(2)
+        elif c == "#":
+            self.try_toggle_stream(3)
+        elif c == "$":
+            self.try_toggle_stream(4)
+        elif c == "%":
+            self.try_toggle_stream(5)
+        elif c == "^":
+            self.try_toggle_stream(6)
+        elif c == "&":
+            self.try_toggle_stream(7)
+        elif c == "*":
+            self.try_toggle_stream(8)
+        elif c == "(":
+            self.try_toggle_stream(9)
 
     def place_cursor(self, row, col):
         os.write(sys.stdout.fileno(), b'\x1b[%d;%dH'%(row, col))
@@ -679,11 +775,81 @@ class Console:
         os.write(sys.stdout.fileno(), b'\x1b[2J')
 
     def print_bar(self):
-        _, row, col = self.get_cursor_pos()
+        cols = get_cols()
+        state, substate, target = self.status
+        state_msg = state + (f"({substate})" if substate else "")
+
+        blue = fore_num(202) + back_num(17)
+        orange = fore_num(17) + back_num(202)
+
+        bar1 = b"state: "
+        # printable length
+        bar1_len = len(bar1)
+        for i, stage in enumerate(self.state_machine.stages):
+            # Active stage is orange
+            if stage.log_name().lower() == state.lower():
+                color = orange
+            else:
+                color = blue
+
+            # Target stage is donoted with <
+            if stage.log_name().lower() == target.lower():
+                post = b"< "
+            else:
+                post = b"  "
+
+            # TODO: truncate this properly for narrow consoles
+            bar1 += b"  (%d)"%i + color + asbytes(stage.log_name().upper()) + blue + post
+            bar1_len += 7 + len(stage.log_name())
+
+        # fill bar
+        bar1 += b" " * (cols - bar1_len)
+
+        bar2 = blue + b"logs: "
+        bar2_len = 6
+
+        def get_binding(idx):
+            return [
+                b"())",
+                b"(!)",
+                b"(@)",
+                b"(#)",
+                b"($)",
+                b"(%)",
+                b"(^)",
+                b"(&)",
+                b"(*)",
+                b"(()",
+                b"   ",
+            ][min(idx, 10)]
+
+        def get_log_name(name):
+            return "console" if name == "dead" else name
+
+        for i, stage in enumerate(self.state_machine.stages):
+            binding = get_binding(i)
+            name = get_log_name(stage.log_name())
+
+            if name in self.active_streams:
+                color = orange
+            else:
+                color = blue
+
+            # TODO: truncate this properly for narrow consoles
+            bar2 += binding + color + asbytes(name.upper()) + blue + b"    "
+            bar2_len += 7 + len(name)
+
+        bar2 += b" " * (cols - bar2_len)
+
+        os.write(sys.stdout.fileno(), save_cursor())
         self.place_cursor(1, 1)
         self.erase_line()
-        os.write(sys.stdout.fileno(), invert_colors(self.state_msg))
-        self.place_cursor(row, col)
+        os.write(
+            sys.stdout.fileno(),
+            back_num(17) + fore_num(202) + bar1
+            + fore_num(7) + bar2 + res,
+        )
+        os.write(sys.stdout.fileno(), restore_cursor())
 
 
 def check_keys(allowed, required, config, name):
