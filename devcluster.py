@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import abc
 import enum
 import time
@@ -771,11 +773,9 @@ class Console:
         # sort the streams chronologically
         new_logs.sort(key=lambda x: x[0])
 
-        self.erase_screen()
-        self.place_cursor(2, 1)
-
-        os.write(sys.stdout.fileno(), b"".join(x[1] for x in new_logs))
-        self.print_bar()
+        prebar_bytes = self.erase_screen() + self.place_cursor(3, 1)
+        prebar_bytes += b"".join(x[1] for x in new_logs)
+        self.print_bar(prebar_bytes)
 
     def set_stream(self, stream, val):
         if isinstance(stream, int):
@@ -794,8 +794,7 @@ class Console:
 
     def log_cb(self, msg, stream):
         if stream in self.active_streams:
-            os.write(sys.stdout.fileno(), msg)
-            self.print_bar()
+            self.print_bar(msg)
 
     def state_cb(self, state, substate, target):
         self.status = (state, substate, target)
@@ -866,15 +865,15 @@ class Console:
         self.handle_key(key)
 
     def place_cursor(self, row, col):
-        os.write(sys.stdout.fileno(), b'\x1b[%d;%dH'%(row, col))
+        return b'\x1b[%d;%dH'%(row, col)
 
     def erase_line(self):
-        os.write(sys.stdout.fileno(), b'\x1b[2K')
+        return b'\x1b[2K'
 
     def erase_screen(self):
-        os.write(sys.stdout.fileno(), b'\x1b[2J')
+        return b'\x1b[2J'
 
-    def print_bar(self):
+    def print_bar(self, prebar_bytes=b""):
         cols = get_cols()
         state, substate, target = self.status
         state_msg = state + (f"({substate})" if substate else "")
@@ -942,15 +941,21 @@ class Console:
 
         bar2 += b" " * (cols - bar2_len)
 
-        os.write(sys.stdout.fileno(), save_cursor())
-        self.place_cursor(1, 1)
-        self.erase_line()
+        bar_bytes = b"".join([back_num(17), fore_num(202), bar1, fore_num(7), bar2, res])
+
         os.write(
             sys.stdout.fileno(),
-            back_num(17) + fore_num(202) + bar1
-            + fore_num(7) + bar2 + res,
+            b"".join(
+                [
+                    prebar_bytes,
+                    save_cursor(),
+                    self.place_cursor(1, 1),
+                    self.erase_line(),
+                    bar_bytes,
+                    restore_cursor(),
+                ]
+            )
         )
-        os.write(sys.stdout.fileno(), restore_cursor())
 
 
 def check_keys(allowed, required, config, name):
