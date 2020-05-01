@@ -11,6 +11,7 @@ import contextlib
 import threading
 import socket
 import yaml
+import re
 
 import subprocess
 import fcntl
@@ -108,7 +109,7 @@ def asbytes(msg):
 
 def nonblock(fd):
     flags = fcntl.fcntl(fd, fcntl.F_GETFL)
-    fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+    fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK | os.O_CLOEXEC)
 
 
 class Poll:
@@ -207,10 +208,49 @@ class ConnCheck(threading.Thread):
         self.quit = True
 
 
+class LogCheck(AtomicOperation):
+    """
+    Wait for a log stream to print out a phrase before allowing the state to progress.
+    """
+    def __init__(self, logger, stream, report_fd, regex):
+        self.logger = logger
+        self.stream = stream
+        self.report_fd = report_fd
+
+        self.pattern = re.compile(asbytes(regex))
+
+        self.canceled = False
+
+        self.logger.add_callback(self.log_cb)
+
+    def __str__(self):
+        return "checking"
+
+    def cancel(self):
+        if not self.canceled:
+            self.canceled = True
+            os.write(self.report_fd, b'FAIL')
+            self.logger.remove_callback(self.log_cb)
+
+    def join(self):
+        pass
+
+    def log_cb(self, msg, stream):
+        if stream != self.stream:
+            return
+
+        if len(self.pattern.findall(msg)) == 0:
+            return
+
+        os.write(self.report_fd, b'success')
+        self.logger.remove_callback(self.log_cb)
+
+
 class AtomicSubprocess(AtomicOperation):
-    def __init__(self, poll, log, report_fd, cmd):
+    def __init__(self, poll, logger, stream, report_fd, cmd):
         self.poll = poll
-        self.log = log
+        self.logger = logger
+        self.stream = stream
         self.report_fd = report_fd
 
         self.start_time = time.time()
@@ -242,19 +282,19 @@ class AtomicSubprocess(AtomicOperation):
             success = False
 
             if self.dying:
-                self.log(f" ----- {self} canceled -----\n")
+                self.logger.log(f" ----- {self} canceled -----\n", self.stream)
             elif ret != 0:
-                self.log(f" ----- {self} exited with {ret} -----\n")
+                self.logger.log(f" ----- {self} exited with {ret} -----\n", self.stream)
             else:
                 build_time = time.time() - self.start_time
-                self.log(f" ----- {self} complete! (%.2fs) -----\n"%(build_time))
+                self.logger.log(f" ----- {self} complete! (%.2fs) -----\n"%(build_time), self.stream)
                 success = True
 
             os.write(self.report_fd, b'SUCCESS' if success else b'FAIL')
 
     def _handle_out(self, ev):
         if ev & Poll.IN_FLAGS:
-            self.log(os.read(self.out, 4096))
+            self.logger.log(os.read(self.out, 4096), self.stream)
         if ev & Poll.ERR_FLAGS:
             self.poll.unregister(self._handle_out)
             os.close(self.out)
@@ -263,7 +303,7 @@ class AtomicSubprocess(AtomicOperation):
 
     def _handle_err(self, ev):
         if ev & Poll.IN_FLAGS:
-            self.log(os.read(self.err, 4096))
+            self.logger.log(os.read(self.err, 4096), self.stream)
         if ev & Poll.ERR_FLAGS:
             self.poll.unregister(self._handle_err)
             os.close(self.err)
@@ -349,7 +389,7 @@ class Process(Stage):
 
         self.config = config
         self.poll = poll
-        self.log = logger.log
+        self.logger = logger
         self.state_machine = state_machine
 
         self._reset()
@@ -357,21 +397,21 @@ class Process(Stage):
     def _maybe_wait(self):
         """wait() on proc if both stdout and stderr are empty."""
         if not self.dying:
-            self.log(f"{self.log_name()} closing unexpectedly!\n")
+            self.logger.log(f"{self.log_name()} closing unexpectedly!\n")
             # TODO: don't always go to dead state
             self.state_machine.set_target(0)
 
         if self.out is None and self.err is None:
             ret = self.proc.wait()
-            self.log(f"{self.log_name()} exited with {ret}\n")
-            self.log(f" ----- {self.log_name()} exited with {ret} -----\n", self.log_name())
+            self.logger.log(f"{self.log_name()} exited with {ret}\n")
+            self.logger.log(f" ----- {self.log_name()} exited with {ret} -----\n", self.log_name())
             self.proc = None
             self._reset()
             self.state_machine.next_thing()
 
     def _handle_out(self, ev):
         if ev & Poll.IN_FLAGS:
-            self.log(os.read(self.out, 4096), self.log_name())
+            self.logger.log(os.read(self.out, 4096), self.log_name())
         if ev & Poll.ERR_FLAGS:
             self.poll.unregister(self._handle_out)
             os.close(self.out)
@@ -380,7 +420,7 @@ class Process(Stage):
 
     def _handle_err(self, ev):
         if ev & Poll.IN_FLAGS:
-            self.log(os.read(self.err, 4096), self.log_name())
+            self.logger.log(os.read(self.err, 4096), self.log_name())
         if ev & Poll.ERR_FLAGS:
             self.poll.unregister(self._handle_err)
             os.close(self.err)
@@ -392,11 +432,8 @@ class Process(Stage):
             precmd_config = self.config.pre[self.precmds_run]
             self.precmds_run += 1
 
-            def atomic_log(msg):
-                self.log(msg, self.log_name())
-
             return precmd_config.build_atomic(
-                self.poll, atomic_log, self.state_machine.get_report_fd()
+                self.poll, self.logger, self.log_name(), self.state_machine.get_report_fd()
             )
         return None
 
@@ -405,11 +442,8 @@ class Process(Stage):
             postcmd_config = self.config.post[self.postcmds_run]
             self.postcmds_run += 1
 
-            def atomic_log(msg):
-                self.log(msg, self.log_name())
-
             return postcmd_config.build_atomic(
-                self.poll, atomic_log, self.state_machine.get_report_fd()
+                self.poll, self.logger, self.log_name(), self.state_machine.get_report_fd()
             )
         return None
 
@@ -440,6 +474,8 @@ class Process(Stage):
             self.proc.kill()
         else:
             # kill via command (mainly for docker containers)
+            # TODO: there's a race condition here where we might not actually have a docker
+            # container yet
             self.dying = True
             p = subprocess.Popen(
                 self.config.kill,
@@ -451,7 +487,7 @@ class Process(Stage):
             ret = p.wait()
             if ret != 0:
                 kill_str = " ".join(self.config.kill)
-                self.log(asbytes(f"\"{kill_str}\" says:\n") + asbytes(err))
+                self.logger.log(asbytes(f"\"{kill_str}\" says:\n") + asbytes(err))
 
     def log_name(self):
         return self.config.name
@@ -481,6 +517,9 @@ class Logger:
     def add_callback(self, cb):
         self.callbacks.append(cb)
 
+    def remove_callback(self, cb):
+        self.callbacks.remove(cb)
+
 
 class StateMachine:
     def __init__(self, logger, poll):
@@ -493,7 +532,9 @@ class StateMachine:
         self.atomic_op = None
 
         # the pipe is used by the atomic_op to pass messages to the poll loop
-        self.pipe_rd, self.pipe_wr = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
+        self.pipe_rd, self.pipe_wr = os.pipe()
+        nonblock(self.pipe_rd)
+        nonblock(self.pipe_wr)
         poll.register(self.pipe_rd, Poll.IN_FLAGS, self.handle_pipe)
 
         self.stages = [DeadStage(self)]
@@ -532,13 +573,14 @@ class StateMachine:
             self.atomic_op = atomic_op
             return
 
-        if not process.running():
-            process.run_command()
-
+        # Launch the first postcommand immediately before launching the command, in case there
+        # is a race condition (such as registering for log callbacks on the stream).
         atomic_op = process.get_postcommand()
         if atomic_op is not None:
             self.atomic_op = atomic_op
-            return
+
+        if not process.running():
+            process.run_command()
 
     def next_thing(self):
         """
@@ -656,10 +698,8 @@ class Console:
 
         self.status = ("state", "substate", "target")
 
-        self.active_streams = set()
-        for stream in ["db", "master", "agent"]:
-            if stream in self.logger.streams:
-                self.active_streams.add(stream)
+        # default to all streams active
+        self.active_streams = set(self.logger.streams)
 
         self.redraw()
 
@@ -714,56 +754,59 @@ class Console:
             return
         self.set_stream(idx, None)
 
-    def handle_stdin(self, ev):
-        c = sys.stdin.read(1)
-        if c == '\x03':
+    def handle_key(self, key):
+        if key == '\x03':
             self.state_machine.quit()
-        elif c == "q":
+        elif key == "q":
             self.state_machine.quit()
 
         # 0-9: set target state
-        elif c == "0":
+        elif key == "0" or key == "`":
             self.try_set_target(0)
-        elif c == "1":
+        elif key == "1":
             self.try_set_target(1)
-        elif c == "2":
+        elif key == "2":
             self.try_set_target(2)
-        elif c == "3":
+        elif key == "3":
             self.try_set_target(3)
-        elif c == "4":
+        elif key == "4":
             self.try_set_target(4)
-        elif c == "5":
+        elif key == "5":
             self.try_set_target(5)
-        elif c == "6":
+        elif key == "6":
             self.try_set_target(6)
-        elif c == "7":
+        elif key == "7":
             self.try_set_target(7)
-        elif c == "8":
+        elif key == "8":
             self.try_set_target(8)
-        elif c == "9":
+        elif key == "9":
             self.try_set_target(9)
 
         # shift + 0-9: toggle logs
-        elif c == ")":
+        elif key == ")" or key == "~":
             self.try_toggle_stream(0)
-        elif c == "!":
+        elif key == "!":
             self.try_toggle_stream(1)
-        elif c == "@":
+        elif key == "@":
             self.try_toggle_stream(2)
-        elif c == "#":
+        elif key == "#":
             self.try_toggle_stream(3)
-        elif c == "$":
+        elif key == "$":
             self.try_toggle_stream(4)
-        elif c == "%":
+        elif key == "%":
             self.try_toggle_stream(5)
-        elif c == "^":
+        elif key == "^":
             self.try_toggle_stream(6)
-        elif c == "&":
+        elif key == "&":
             self.try_toggle_stream(7)
-        elif c == "*":
+        elif key == "*":
             self.try_toggle_stream(8)
-        elif c == "(":
+        elif key == "(":
             self.try_toggle_stream(9)
+
+    def handle_stdin(self, ev):
+        key = sys.stdin.read(1)
+        self.handle_key(key)
 
     def place_cursor(self, row, col):
         os.write(sys.stdout.fileno(), b'\x1b[%d;%dH'%(row, col))
@@ -799,7 +842,8 @@ class Console:
                 post = b"  "
 
             # TODO: truncate this properly for narrow consoles
-            bar1 += b"  (%d)"%i + color + asbytes(stage.log_name().upper()) + blue + post
+            binding = b"  (`)" if i == 0 else b"  (%d)"%i
+            bar1 += binding + color + asbytes(stage.log_name().upper()) + blue + post
             bar1_len += 7 + len(stage.log_name())
 
         # fill bar
@@ -810,7 +854,7 @@ class Console:
 
         def get_binding(idx):
             return [
-                b"())",
+                b"(~)",
                 b"(!)",
                 b"(@)",
                 b"(#)",
@@ -899,7 +943,7 @@ class StageConfig:
 class AtomicConfig:
     @staticmethod
     def read(config):
-        allowed = {"custom", "conncheck"}
+        allowed = {"custom", "conncheck", "logcheck"}
         required = set()
 
         assert isinstance(config, dict), "AtomicConfig must be a dictionary with a single key"
@@ -911,9 +955,11 @@ class AtomicConfig:
             return CustomAtomicConfig(val)
         elif typ == "conncheck":
             return ConnCheckConfig(val)
+        elif typ == "logcheck":
+            return LogCheckConfig(val)
 
     @abc.abstractmethod
-    def build_atomic(self, poll, log, report_fd):
+    def build_atomic(self, poll, logger, stream, report_fd):
         pass
 
 
@@ -959,7 +1005,7 @@ class DBConfig(StageConfig):
         custom_config = CustomConfig({
             "cmd": cmd,
             "name": "db",
-            "post": [{"conncheck": {"port": self.port}}],
+            "post": [{"logcheck": {"regex": "database system is ready to accept connections"}}],
             "kill": ["docker", "kill", self.container_name],
         })
 
@@ -1030,8 +1076,27 @@ class ConnCheckConfig:
         self.host = config.get("host", "localhost")
         self.port = config["port"]
 
-    def build_atomic(self, poll, log, report_fd):
+    def build_atomic(self, poll, logger, stream, report_fd):
         return ConnCheck(self.host, self.port, report_fd)
+
+
+class LogCheckConfig:
+    def __init__(self, config):
+        allowed = {"regex", "stream"}
+        required = {"regex"}
+        check_keys(allowed, required, config, type(self).__name__)
+
+        self.regex = config["regex"]
+        self.stream = config.get("stream")
+
+        # confirm that the regex is compilable
+        pattern = re.compile(asbytes(self.regex))
+        assert pattern.findall(b"asdfasdfdatabase system is ready to accept connections")
+
+    def build_atomic(self, poll, logger, stream, report_fd):
+        # Allow the configured stream to overwrite the default stream.
+        s = stream if self.stream is None else self.stream
+        return LogCheck(logger, s, report_fd, self.regex)
 
 
 class CustomAtomicConfig:
@@ -1039,8 +1104,8 @@ class CustomAtomicConfig:
         check_list_of_strings(config, "AtomicConfig.custom must be a list of strings")
         self.cmd = config
 
-    def build_atomic(self, poll, log, report_fd):
-        return AtomicSubprocess(poll, log, report_fd, self.cmd)
+    def build_atomic(self, poll, logger, stream, report_fd):
+        return AtomicSubprocess(poll, logger, stream, report_fd, self.cmd)
 
 
 class CustomConfig(StageConfig):
@@ -1071,12 +1136,13 @@ class CustomConfig(StageConfig):
 
 class Config:
     def __init__(self, config):
-        allowed = {"stages"}
+        allowed = {"stages", "startup_input"}
         required = {"stages"}
         check_keys(allowed, required, config, type(self).__name__)
 
         check_list_of_dicts(config["stages"], "stages must be a list of dicts")
         self.stages = [StageConfig.read(stage) for stage in config["stages"]]
+        self.startup_input = config.get("startup_input", "")
 
 
 def main(config):
@@ -1096,6 +1162,9 @@ def main(config):
             state_machine.add_stage(stage_config.build_stage(poll, logger, state_machine))
 
         state_machine.set_target(len(stage_names))
+
+        for c in config.startup_input:
+            console.handle_key(c)
 
         while state_machine.should_run():
             poll.poll()
