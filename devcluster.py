@@ -468,26 +468,9 @@ class Process(Stage):
         return self.proc is not None
 
     def kill(self):
-        if len(self.config.kill) == 0:
-            # kill via signal
-            self.dying = True
-            self.proc.kill()
-        else:
-            # kill via command (mainly for docker containers)
-            # TODO: there's a race condition here where we might not actually have a docker
-            # container yet
-            self.dying = True
-            p = subprocess.Popen(
-                self.config.kill,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-            )
-            err = p.stderr.read()
-            ret = p.wait()
-            if ret != 0:
-                kill_str = " ".join(self.config.kill)
-                self.logger.log(asbytes(f"\"{kill_str}\" says:\n") + asbytes(err))
+        # kill via signal
+        self.dying = True
+        self.proc.kill()
 
     def log_name(self):
         return self.config.name
@@ -495,6 +478,80 @@ class Process(Stage):
     def _reset(self):
         self.precmds_run = 0
         self.postcmds_run = 0
+
+
+class DockerProcess(Process):
+    """
+    A long-running process in docker with special startup and kill semantics.
+    """
+
+    def run_command(self):
+        # TODO: Find a way to do the `docker container create` asynchronously.
+        # Presently there's no way to deal with the intermediate state of a
+        # created container without guaranteeing that we start it right away.
+        start = time.time()
+        create_args = [
+            "docker",
+            "container",
+            "create",
+            "--rm",
+            "--name",
+            self.config.container_name,
+            *self.config.container_create,
+        ]
+        p = subprocess.Popen(
+            create_args,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+        err = p.stderr.read()
+        ret = p.wait()
+        if ret != 0:
+            create_str = " ".join(create_args)
+            self.logger.log(asbytes(f"\"{create_str}\" says:\n") + asbytes(err))
+            # TODO: don't always go to dead state
+            self.state_machine.set_target(0)
+            return
+
+        self.logger.log(
+            f" ----- container create took %.3fs -----\n"%(time.time() - start),
+            self.log_name(),
+        )
+
+        self.dying = False
+        self.proc = subprocess.Popen(
+            ["docker", "container", "start", "-a", self.config.container_name],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.out = self.proc.stdout.fileno()
+        self.err = self.proc.stderr.fileno()
+
+        nonblock(self.out)
+        nonblock(self.err)
+
+        self.poll.register(self.out, Poll.IN_FLAGS, self._handle_out)
+        self.poll.register(self.err, Poll.IN_FLAGS, self._handle_err)
+
+
+
+    def kill(self):
+        self.dying = True
+        kill_cmd = ["docker", "kill", self.config.container_name]
+        p = subprocess.Popen(
+            kill_cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+        err = p.stderr.read()
+        ret = p.wait()
+        if ret != 0:
+            kill_str = " ".join(kill_cmd)
+            self.logger.log(asbytes(f"\"{kill_str}\" says:\n") + asbytes(err))
+
 
 
 class Logger:
@@ -918,7 +975,7 @@ def check_list_of_dicts(l, msg):
 class StageConfig:
     @staticmethod
     def read(config):
-        allowed = {"db", "master", "agent", "custom"}
+        allowed = {"db", "master", "agent", "custom", "custom_docker"}
         required = set()
 
         assert isinstance(config, dict), "StageConfig must be a dictionary with a single key"
@@ -928,6 +985,8 @@ class StageConfig:
 
         if typ == "custom":
             return CustomConfig(val)
+        if typ == "custom_docker":
+            return CustomDockerConfig(val)
         elif typ == "db":
             return DBConfig(val)
         elif typ == "master":
@@ -979,37 +1038,32 @@ class DBConfig(StageConfig):
         self.name = "db"
 
     def build_stage(self, poll, logger, state_machine):
-        cmd = [
-            "docker",
-            "run",
-            "--rm",
-        ]
 
         if self.data_dir:
-            cmd += ["-v", f"{self.data_dir}:/var/lib/postgresql/data"]
+            create_args = ["-v", f"{self.data_dir}:/var/lib/postgresql/data"]
+        else:
+            create_args = []
 
-        cmd += [
-            "-e",
-            f"POSTGRES_DB={self.db_name}",
-            "-e",
-            f"POSTGRES_PASSWORD={self.password}",
+        create_args += [
             "-p",
-            f"{self.port}:5432",
-            "--name",
-            self.container_name,
+            "5432:5432",
+            "-e",
+            "POSTGRES_DB=determined",
+            "-e",
+            "POSTGRES_PASSWORD=postgres",
             "postgres:10.7",
             "-N",
             "10000",
         ]
 
-        custom_config = CustomConfig({
-            "cmd": cmd,
+        custom_config = CustomDockerConfig({
             "name": "db",
+            "container_name": self.container_name,
+            "container_create": create_args,
             "post": [{"logcheck": {"regex": "database system is ready to accept connections"}}],
-            "kill": ["docker", "kill", self.container_name],
         })
 
-        return Process(custom_config, poll, logger, state_machine)
+        return DockerProcess(custom_config, poll, logger, state_machine)
 
 
 class MasterConfig(StageConfig):
@@ -1110,7 +1164,7 @@ class CustomAtomicConfig:
 
 class CustomConfig(StageConfig):
     def __init__(self, config):
-        allowed = {"cmd", "name", "pre", "post", "kill"}
+        allowed = {"cmd", "name", "pre", "post"}
         required = {"cmd", "name"}
 
         check_keys(allowed, required, config, type(self).__name__)
@@ -1119,10 +1173,7 @@ class CustomConfig(StageConfig):
         check_list_of_strings(self.cmd, "CustomConfig.cmd must be a list of strings")
 
         self.name = config["name"]
-        assert isinstance(self.name, str), "CustomConfig.name msut be a string"
-
-        self.kill = config.get("kill", [])
-        check_list_of_strings(self.kill, "CustomConfig.kill must be a list of strings")
+        assert isinstance(self.name, str), "CustomConfig.name must be a string"
 
         check_list_of_dicts(config.get("pre", []), "CustomConfig.pre must be a list of dicts")
         self.pre = [AtomicConfig.read(pre) for pre in config.get("pre", [])]
@@ -1132,6 +1183,33 @@ class CustomConfig(StageConfig):
 
     def build_stage(self, poll, logger, state_machine):
         return Process(self, poll, logger, state_machine)
+
+
+class CustomDockerConfig(StageConfig):
+    def __init__(self, config):
+        allowed = {"name", "container_name", "container_create", "pre", "post"}
+        required = {"name", "container_name", "container_create"}
+
+        check_keys(allowed, required, config, type(self).__name__)
+
+        self.container_name = config["container_name"]
+
+        self.container_create = config["container_create"]
+        check_list_of_strings(
+            self.container_create, "CustomConfig.container_create must be a list of strings"
+        )
+
+        self.name = config["name"]
+        assert isinstance(self.name, str), "CustomConfig.name must be a string"
+
+        check_list_of_dicts(config.get("pre", []), "CustomConfig.pre must be a list of dicts")
+        self.pre = [AtomicConfig.read(pre) for pre in config.get("pre", [])]
+
+        check_list_of_dicts(config.get("post", []), "CustomConfig.post must be a list of dicts")
+        self.post = [AtomicConfig.read(post) for post in config.get("post", [])]
+
+    def build_stage(self, poll, logger, state_machine):
+        return DockerProcess(self, poll, logger, state_machine)
 
 
 class Config:
