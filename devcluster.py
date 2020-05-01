@@ -14,6 +14,7 @@ import threading
 import socket
 import yaml
 import re
+import signal
 
 import subprocess
 import fcntl
@@ -84,23 +85,25 @@ def restore_cursor():
 
 
 _cols = None
-# Debounce calls to tput
-_cols_time = 0
 
-def get_cols():
-    global _cols_time, _cols
-    if _cols is None or (time.time() - _cols_time) > 0.1:
+def get_cols(recheck=False):
+    global _cols
+    if _cols is None or recheck:
         p = subprocess.Popen(["tput", "cols"], stdout=subprocess.PIPE)
         _cols = int(p.stdout.read().strip())
         assert p.wait() == 0
     return _cols
 
 
-def get_rows():
-    p = subprocess.Popen(["tput", "rows"], stdout=subprocess.PIPE)
-    rows = int(p.stdout.read().strip())
-    assert p.wait() == 0
-    return rows
+_rows = None
+
+def get_rows(recheck=False):
+    global _rows
+    if _rows is None or recheck:
+        p = subprocess.Popen(["tput", "lines"], stdout=subprocess.PIPE)
+        _rows = int(p.stdout.read().strip())
+        assert p.wait() == 0
+    return _rows
 
 
 def asbytes(msg):
@@ -604,6 +607,8 @@ class StateMachine:
 
         self.callbacks = []
 
+        self.report_callbacks = {}
+
     def get_report_fd(self):
         return self.pipe_wr
 
@@ -612,6 +617,9 @@ class StateMachine:
 
     def add_callback(self, cb):
         self.callbacks.append(cb)
+
+    def add_report_callback(self, report_msg, cb):
+        self.report_callbacks[report_msg] = cb
 
     def advance_stage(self):
         """
@@ -710,16 +718,22 @@ class StateMachine:
         self.next_thing()
 
     def handle_pipe(self, ev):
-        self.atomic_op.join()
-        self.atomic_op = None
-
         if ev & Poll.IN_FLAGS:
             msg = os.read(self.pipe_rd, 4096).decode("utf8")
+            # check if we have a listener for this callback
+            cb = self.report_callbacks.get(msg)
+            if cb is not None:
+                cb()
+                return
+
+            self.atomic_op.join()
+            self.atomic_op = None
             if msg == "FAIL":
                 # set the target state to be one less than wherever-we-are
                 self.target = min(self.state - 1, self.target)
 
             self.next_thing()
+            return
 
         if ev & Poll.ERR_FLAGS:
             # Just die.
@@ -776,6 +790,12 @@ class Console:
         prebar_bytes = self.erase_screen() + self.place_cursor(3, 1)
         prebar_bytes += b"".join(x[1] for x in new_logs)
         self.print_bar(prebar_bytes)
+
+    def handle_window_change(self):
+        """This should get called some time after a SIGWINCH."""
+        _ = get_cols(True)
+        _ = get_rows(True)
+        self.redraw()
 
     def set_stream(self, stream, val):
         if isinstance(stream, int):
@@ -1240,6 +1260,17 @@ def main(config):
         state_machine = StateMachine(logger, poll)
 
         console = Console(logger, poll, state_machine)
+
+        def _sigwinch_handler(signum, frame):
+            """Enqueue a call to _sigwinch_callback() via poll()."""
+            os.write(state_machine.get_report_fd(), b"SIGWINCH")
+
+        def _sigwinch_callback():
+            """Handle the SIGWINCH when it is safe"""
+            console.handle_window_change()
+
+        state_machine.add_report_callback("SIGWINCH", _sigwinch_callback)
+        signal.signal(signal.SIGWINCH, _sigwinch_handler)
 
         for stage_config in config.stages:
             state_machine.add_stage(stage_config.build_stage(poll, logger, state_machine))
