@@ -207,7 +207,8 @@ class ConnCheck(threading.Thread):
                 success = True
                 break
         finally:
-            os.write(self.report_fd, b'success' if success else b'FAIL')
+            # "S"uccess or "F"ail
+            os.write(self.report_fd, b'S' if success else b'F')
 
     def cancel(self):
         self.quit = True
@@ -234,7 +235,7 @@ class LogCheck(AtomicOperation):
     def cancel(self):
         if not self.canceled:
             self.canceled = True
-            os.write(self.report_fd, b'FAIL')
+            os.write(self.report_fd, b'F')
             self.logger.remove_callback(self.log_cb)
 
     def join(self):
@@ -247,7 +248,7 @@ class LogCheck(AtomicOperation):
         if len(self.pattern.findall(msg)) == 0:
             return
 
-        os.write(self.report_fd, b'success')
+        os.write(self.report_fd, b'S')
         self.logger.remove_callback(self.log_cb)
 
 
@@ -295,7 +296,7 @@ class AtomicSubprocess(AtomicOperation):
                 self.logger.log(f" ----- {self} complete! (%.2fs) -----\n"%(build_time), self.stream)
                 success = True
 
-            os.write(self.report_fd, b'SUCCESS' if success else b'FAIL')
+            os.write(self.report_fd, b'S' if success else b'F')
 
     def _handle_out(self, ev):
         if ev & Poll.IN_FLAGS:
@@ -628,6 +629,9 @@ class StateMachine:
           - start the real command (and maybe a postcommand), or
           - start the next postcommand
         """
+        # Never do anything if there is an atomic operation to finish.
+        if self.atomic_op is not None:
+            return
 
         # nothing to do in the dead state
         if self.state < 0:
@@ -663,13 +667,9 @@ class StateMachine:
 
         # Advance state?
         elif self.state < self.target:
-            # Wait for the atomic operation to finish.
-            if self.atomic_op is not None:
-                pass
-            else:
-                self.advance_stage()
-                if self.atomic_op is None:
-                    self.transition(self.state + 1)
+            self.advance_stage()
+            if self.atomic_op is None:
+                self.transition(self.state + 1)
 
         # Regress state.
         elif self.state > self.target:
@@ -720,19 +720,20 @@ class StateMachine:
     def handle_pipe(self, ev):
         if ev & Poll.IN_FLAGS:
             msg = os.read(self.pipe_rd, 4096).decode("utf8")
-            # check if we have a listener for this callback
-            cb = self.report_callbacks.get(msg)
-            if cb is not None:
-                cb()
-                return
+            for c in msg:
+                # check if we have a listener for this callback
+                cb = self.report_callbacks.get(c)
+                if cb is not None:
+                    cb()
+                    continue
 
-            self.atomic_op.join()
-            self.atomic_op = None
-            if msg == "FAIL":
-                # set the target state to be one less than wherever-we-are
-                self.target = min(self.state - 1, self.target)
+                self.atomic_op.join()
+                self.atomic_op = None
+                if c == "F":  # Fail
+                    # set the target state to be one less than wherever-we-are
+                    self.target = min(self.state - 1, self.target)
 
-            self.next_thing()
+                self.next_thing()
             return
 
         if ev & Poll.ERR_FLAGS:
@@ -1263,13 +1264,13 @@ def main(config):
 
         def _sigwinch_handler(signum, frame):
             """Enqueue a call to _sigwinch_callback() via poll()."""
-            os.write(state_machine.get_report_fd(), b"SIGWINCH")
+            os.write(state_machine.get_report_fd(), b"W")
 
         def _sigwinch_callback():
             """Handle the SIGWINCH when it is safe"""
             console.handle_window_change()
 
-        state_machine.add_report_callback("SIGWINCH", _sigwinch_callback)
+        state_machine.add_report_callback("W", _sigwinch_callback)
         signal.signal(signal.SIGWINCH, _sigwinch_handler)
 
         for stage_config in config.stages:
