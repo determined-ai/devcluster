@@ -1097,6 +1097,13 @@ def check_list_of_dicts(l, msg):
         assert isinstance(s, dict), msg
 
 
+def read_path(path):
+    """Expand ~'s in a non-None path."""
+    if path is None:
+        return None
+    return os.path.expanduser(path)
+
+
 class StageConfig:
     @staticmethod
     def read(config):
@@ -1127,7 +1134,7 @@ class StageConfig:
 class AtomicConfig:
     @staticmethod
     def read(config):
-        allowed = {"custom", "conncheck", "logcheck"}
+        allowed = {"custom", "sh", "conncheck", "logcheck"}
         required = set()
 
         assert isinstance(config, dict), "AtomicConfig must be a dictionary with a single key"
@@ -1137,6 +1144,8 @@ class AtomicConfig:
 
         if typ == "custom":
             return CustomAtomicConfig(val)
+        if typ == "sh":
+            return ShellAtomicConfig(val)
         elif typ == "conncheck":
             return ConnCheckConfig(val)
         elif typ == "logcheck":
@@ -1159,7 +1168,7 @@ class DBConfig(StageConfig):
         self.password = str(config.get("password", "postgres"))
         self.db_name = str(config.get("db_name", "determined"))
         self.container_name = str(config.get("container_name", "determined_db"))
-        self.data_dir = config.get("data_dir")
+        self.data_dir = read_path(config.get("data_dir"))
         self.name = "db"
 
     def build_stage(self, poll, logger, state_machine):
@@ -1193,16 +1202,26 @@ class DBConfig(StageConfig):
 
 class MasterConfig(StageConfig):
     def __init__(self, config):
-        self.config = config
+        allowed = {"pre", "binary", "config_file"}
+        required = set()
+        check_keys(allowed, required, config, type(self).__name__)
+
+        self.config_file = config.get("config_file", {})
+
+        check_list_of_dicts(config.get("pre", []), "CustomConfig.pre must be a list of dicts")
+        self.pre = config.get("pre", [])
+
+        self.binary = read_path(config.get("binary", "master/build/determined-master"))
+
         self.name = "master"
 
     def build_stage(self, poll, logger, state_machine):
         config_path = "/tmp/devcluster-master.conf"
         with open(config_path, "w") as f:
-            f.write(yaml.dump(self.config))
+            f.write(yaml.dump(self.config_file))
 
         cmd = [
-            os.path.join(get_gopath(), "bin", "determined-master"),
+            self.binary,
             "--config-file",
             config_path,
             "--root",
@@ -1212,7 +1231,7 @@ class MasterConfig(StageConfig):
         custom_config = CustomConfig({
             "cmd": cmd,
             "name": "master",
-            "pre": [{"custom": ["make", "-C", "master", "build-files", "install-native"]}],
+            "pre": self.pre,
             # TODO: don't hardcode 8080
             "post": [{"conncheck": {"port": 8080}}],
         })
@@ -1222,16 +1241,26 @@ class MasterConfig(StageConfig):
 
 class AgentConfig(StageConfig):
     def __init__(self, config):
-        self.config = config or {"master_host": "localhost", "master_port": 8080}
+        allowed = {"pre", "binary", "config_file"}
+        required = set()
+        check_keys(allowed, required, config, type(self).__name__)
+
+        self.binary = read_path(config.get("binary", "agent/build/determined-agent"))
+
+        self.config_file = config.get("config_file", {})
+
+        check_list_of_dicts(config.get("pre", []), "CustomConfig.pre must be a list of dicts")
+        self.pre = config.get("pre", [])
+
         self.name = "agent"
 
     def build_stage(self, poll, logger, state_machine):
         config_path = "/tmp/devcluster-agent.conf"
         with open(config_path, "w") as f:
-            f.write(yaml.dump(self.config))
+            f.write(yaml.dump(self.config_file))
 
         cmd = [
-            os.path.join(get_gopath(), "bin", "determined-agent"),
+            self.binary,
             "run",
             "--config-file",
             config_path,
@@ -1240,7 +1269,7 @@ class AgentConfig(StageConfig):
         custom_config = CustomConfig({
             "cmd": cmd,
             "name": "agent",
-            "pre": [{"custom": ["make", "-C", "agent", "install-native"]}],
+            "pre": self.pre,
         })
 
         return Process(custom_config, poll, logger, state_machine)
@@ -1282,6 +1311,14 @@ class CustomAtomicConfig:
     def __init__(self, config):
         check_list_of_strings(config, "AtomicConfig.custom must be a list of strings")
         self.cmd = config
+
+    def build_atomic(self, poll, logger, stream, report_fd):
+        return AtomicSubprocess(poll, logger, stream, report_fd, self.cmd)
+
+class ShellAtomicConfig:
+    def __init__(self, config):
+        assert isinstance(config, str), "AtomicConnfig.sh must be a single string"
+        self.cmd = ["sh", "-c", config]
 
     def build_atomic(self, poll, logger, stream, report_fd):
         return AtomicSubprocess(poll, logger, stream, report_fd, self.cmd)
