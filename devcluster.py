@@ -253,7 +253,7 @@ class LogCheck(AtomicOperation):
 
 
 class AtomicSubprocess(AtomicOperation):
-    def __init__(self, poll, logger, stream, report_fd, cmd):
+    def __init__(self, poll, logger, stream, report_fd, cmd, quiet=False):
         self.poll = poll
         self.logger = logger
         self.stream = stream
@@ -265,16 +265,18 @@ class AtomicSubprocess(AtomicOperation):
         self.proc = subprocess.Popen(
             cmd,
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
+            stdout=subprocess.DEVNULL if quiet else subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        self.out = self.proc.stdout.fileno()
+        self.out = None if quiet else self.proc.stdout.fileno()
         self.err = self.proc.stderr.fileno()
 
-        nonblock(self.out)
+        if not quiet:
+            nonblock(self.out)
         nonblock(self.err)
 
-        self.poll.register(self.out, Poll.IN_FLAGS, self._handle_out)
+        if not quiet:
+            self.poll.register(self.out, Poll.IN_FLAGS, self._handle_out)
         self.poll.register(self.err, Poll.IN_FLAGS, self._handle_err)
 
     def __str__(self):
@@ -324,6 +326,20 @@ class AtomicSubprocess(AtomicOperation):
         pass
 
 
+class DockerRunAtomic(AtomicSubprocess):
+    def __init__(self, *args, **kwargs):
+        kwargs["quiet"] = True
+        super().__init__(*args, **kwargs)
+
+    def __str__(self):
+        return "starting"
+
+    def cancel(self):
+        # Don't support canceling at all; it creates a race condition where we don't know when
+        # we can docker kill the container.
+        pass
+
+
 class Stage:
     @abc.abstractmethod
     def run_command(self):
@@ -332,6 +348,10 @@ class Stage:
     @abc.abstractmethod
     def running(self):
         pass
+
+    def killable(self):
+        """By default, killable() returns running().  It's more complex for docker"""
+        return self.running()
 
     @abc.abstractmethod
     def kill(self):
@@ -400,6 +420,9 @@ class Process(Stage):
 
         self._reset()
 
+    def wait(self):
+        return self.proc.wait()
+
     def _maybe_wait(self):
         """wait() on proc if both stdout and stderr are empty."""
         if not self.dying:
@@ -408,7 +431,7 @@ class Process(Stage):
             self.state_machine.set_target(0)
 
         if self.out is None and self.err is None:
-            ret = self.proc.wait()
+            ret = self.wait()
             self.logger.log(f"{self.log_name()} exited with {ret}\n")
             self.logger.log(f" ----- {self.log_name()} exited with {ret} -----\n", self.log_name())
             self.proc = None
@@ -490,44 +513,51 @@ class DockerProcess(Process):
     """
     A long-running process in docker with special startup and kill semantics.
     """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        # docker run --detach has to be an AtomicOperation because it is way too slow and causes
+        # the UI to hang.  This has far-reaching implications, since `running()` is not longer
+        # based on the main subprocess, and you may then have to `kill()` or `wait()` while the
+        # main subprocess hasn't even been launched.
+        self.docker_started = False
+
+
+    def get_precommand(self):
+        # Inherit the precmds behavior from Process.
+        precmd = super().get_precommand()
+        if precmd is not None:
+            return precmd
+
+        if self.docker_started == False:
+            self.docker_started = True
+            # Add in a new atomic for starting the docker container.
+            run_args = [
+                "docker",
+                "container",
+                "run",
+                "--detach",
+                "--name",
+                self.config.container_name,
+                *self.config.run_args,
+            ]
+            return DockerRunAtomic(
+                self.poll,
+                self.logger,
+                self.log_name(),
+                self.state_machine.get_report_fd(),
+                run_args,
+            )
+
+        return None
+
+    def killable(self):
+        return self.docker_started or self.proc is not None
 
     def run_command(self):
-        # TODO: Find a way to do the `docker container create` asynchronously.
-        # Presently there's no way to deal with the intermediate state of a
-        # created container without guaranteeing that we start it right away.
-        start = time.time()
-        create_args = [
-            "docker",
-            "container",
-            "create",
-            "--rm",
-            "--name",
-            self.config.container_name,
-            *self.config.container_create,
-        ]
-        p = subprocess.Popen(
-            create_args,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-        )
-        err = p.stderr.read()
-        ret = p.wait()
-        if ret != 0:
-            create_str = " ".join(create_args)
-            self.logger.log(asbytes(f"\"{create_str}\" says:\n") + asbytes(err))
-            # TODO: don't always go to dead state
-            self.state_machine.set_target(0)
-            return
-
-        self.logger.log(
-            f" ----- container create took %.3fs -----\n"%(time.time() - start),
-            self.log_name(),
-        )
-
         self.dying = False
         self.proc = subprocess.Popen(
-            ["docker", "container", "start", "-a", self.config.container_name],
+            ["docker", "container", "logs", "-f", self.config.container_name],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -541,6 +571,67 @@ class DockerProcess(Process):
         self.poll.register(self.out, Poll.IN_FLAGS, self._handle_out)
         self.poll.register(self.err, Poll.IN_FLAGS, self._handle_err)
 
+    def docker_wait(self):
+        # Wait for the container.
+        self.docker_started = False
+
+        run_args = ["docker", "wait", self.config.container_name]
+
+        p = subprocess.Popen(
+            run_args,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        err = p.stderr.read()
+        ret = p.wait()
+        if ret != 0:
+            self.logger.log(
+                asbytes(f"`docker wait` for {self.log_name()} failed with {ret} saying\n")
+                + asbytes(err)
+            )
+            self.logger.log(
+                f" ----- `docker wait` for {self.log_name()} exited with {ret} -----\n",
+                self.log_name()
+            )
+            # We don't know what to return
+            return -1
+
+        docker_exit_val = int(p.stdout.read().strip())
+
+        # Remove the container
+        run_args = ["docker", "container", "rm", self.config.container_name]
+
+        p = subprocess.Popen(
+            run_args,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+        err = p.stderr.read()
+        ret = p.wait()
+        if ret != 0:
+            self.logger.log(
+                asbytes(f"`docker container rm` for {self.log_name()} failed with {ret} saying:\n")
+                + asbytes(err)
+            )
+            self.logger.log(
+                f" ----- `docker container rm` for {self.log_name()} exited with {ret} -----\n",
+                self.log_name()
+            )
+
+        return docker_exit_val
+
+    def wait(self):
+        ret = self.proc.wait()
+        if ret != 0:
+            self.logger.log(f"`docker container logs` for {self.log_name()} exited with {ret}\n")
+            self.logger.log(
+                f" ----- `docker container logs` for {self.log_name()} exited with {ret} -----\n",
+                self.log_name()
+            )
+
+        return self.docker_wait()
 
 
     def kill(self):
@@ -558,6 +649,14 @@ class DockerProcess(Process):
             kill_str = " ".join(kill_cmd)
             self.logger.log(asbytes(f"\"{kill_str}\" says:\n") + asbytes(err))
 
+        # If we got canceled, immediately wait on the docker container to exit; there won't be any
+        # closing file descriptors to alert us that the container has closed.
+        # TODO: configure some async thing to wake up the poll loop via the report_fd so this
+        # doesn't block.
+        if self.proc is None:
+            self.docker_wait()
+            self._reset()
+            self.state_machine.next_thing()
 
 
 class Logger:
@@ -677,7 +776,7 @@ class StateMachine:
             if self.atomic_op is not None:
                 self.atomic_op.cancel()
             else:
-                if self.stages[self.state].running():
+                if self.stages[self.state].killable():
                     self.stages[self.state].kill()
                 else:
                     self.transition(self.state - 1)
@@ -1066,11 +1165,11 @@ class DBConfig(StageConfig):
     def build_stage(self, poll, logger, state_machine):
 
         if self.data_dir:
-            create_args = ["-v", f"{self.data_dir}:/var/lib/postgresql/data"]
+            run_args = ["-v", f"{self.data_dir}:/var/lib/postgresql/data"]
         else:
-            create_args = []
+            run_args = []
 
-        create_args += [
+        run_args += [
             "-p",
             "5432:5432",
             "-e",
@@ -1085,7 +1184,7 @@ class DBConfig(StageConfig):
         custom_config = CustomDockerConfig({
             "name": "db",
             "container_name": self.container_name,
-            "container_create": create_args,
+            "run_args": run_args,
             "post": [{"logcheck": {"regex": "database system is ready to accept connections"}}],
         })
 
@@ -1213,16 +1312,16 @@ class CustomConfig(StageConfig):
 
 class CustomDockerConfig(StageConfig):
     def __init__(self, config):
-        allowed = {"name", "container_name", "container_create", "pre", "post"}
-        required = {"name", "container_name", "container_create"}
+        allowed = {"name", "container_name", "run_args", "pre", "post"}
+        required = {"name", "container_name", "run_args"}
 
         check_keys(allowed, required, config, type(self).__name__)
 
         self.container_name = config["container_name"]
 
-        self.container_create = config["container_create"]
+        self.run_args = config["run_args"]
         check_list_of_strings(
-            self.container_create, "CustomConfig.container_create must be a list of strings"
+            self.run_args, "CustomConfig.run_args must be a list of strings"
         )
 
         self.name = config["name"]
@@ -1275,6 +1374,9 @@ def main(config):
 
         for stage_config in config.stages:
             state_machine.add_stage(stage_config.build_stage(poll, logger, state_machine))
+
+        # Draw the screen ASAP
+        console.redraw()
 
         state_machine.set_target(len(stage_names))
 
