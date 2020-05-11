@@ -1171,12 +1171,12 @@ class DBConfig(StageConfig):
 
         run_args += [
             "-p",
-            "5432:5432",
+            f"{self.port}:5432",
             "-e",
-            "POSTGRES_DB=determined",
+            f"POSTGRES_DB={self.db_name}",
             "-e",
-            "POSTGRES_PASSWORD=postgres",
-            "postgres:10.7",
+            f"POSTGRES_PASSWORD={self.password}",
+            "postgres:10.8",
             "-N",
             "10000",
         ]
