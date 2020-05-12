@@ -1230,8 +1230,6 @@ class MasterConfig(StageConfig):
             self.binary,
             "--config-file",
             config_path,
-            "--root",
-            "build/share/determined/master",
         ]
 
         custom_config = CustomConfig({
@@ -1450,9 +1448,9 @@ if __name__ == "__main__":
 
     get_gopath()
 
-    if "DET_ROOT" not in os.environ:
-        print("you must specify the DET_ROOT environment variable", file=sys.stderr)
+    if "DET_PROJ" not in os.environ:
+        print("you must specify the DET_PROJ environment variable", file=sys.stderr)
         sys.exit(1)
-    os.chdir(os.environ["DET_ROOT"])
+    os.chdir(os.environ["DET_PROJ"])
 
     main(config)
