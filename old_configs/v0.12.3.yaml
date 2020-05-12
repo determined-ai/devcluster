@@ -1,0 +1,59 @@
+startup_input: "!@$"
+stages:
+  - db:
+      port: 5432
+      password: postgres
+      data_dir: ~/.postgres
+
+  - custom_docker:
+      name: hausra
+      container_name: determined_hasura
+      run_args:
+        - -p
+        - 8081:8080
+        - -e
+        - HASURA_GRAPHQL_ADMIN_SECRET=hasura
+        - -e
+        - HASURA_GRAPHQL_DATABASE_URL=postgres://postgres:postgres@MY_IP_ADDR:5432/determined
+        - -e
+        - HASURA_GRAPHQL_ENABLE_CONSOLE=true
+        - -e
+        - HASURA_GRAPHQL_ENABLE_TELEMETRY=false
+        - -e
+        - HASURA_GRAPHQL_CONSOLE_ASSETS_DIR=/srv/console-assets
+        - -e
+        - HASURA_GRAPHQL_LOG_LEVEL=warn
+        - hasura/graphql-engine:v1.1.0
+      post:
+        - conncheck:
+            port: 8081
+
+  - master:
+      pre:
+        - sh: make -C master build-files install-native
+      binary: ~/go/bin/determined-master
+      config_file:
+        db:
+          host: localhost
+          port: 5432
+          password: postgres
+          user: postgres
+          name: determined
+        hasura:
+          address: localhost:8081
+          secret: hasura
+        checkpoint_storage:
+          type: shared_fs
+          host_path: /tmp
+          storage_path: determined-cp
+        log:
+          level: debug
+        root: build/share/determined/master
+
+  - agent:
+      pre:
+        - sh: make -C agent install-native
+      binary: ~/go/bin/determined-agent
+      config_file:
+        master_host: MY_IP_ADDR
+        master_port: 8080
