@@ -660,11 +660,14 @@ class DockerProcess(Process):
 
 
 class Logger:
-    def __init__(self, streams):
+    def __init__(self, streams, log_dir):
         all_streams = ["console"] + streams
         self.streams = {stream: [] for stream in all_streams}
         self.index = {i: stream for i, stream in enumerate(all_streams)}
         self.callbacks = []
+
+        self.log_dir = log_dir
+        os.makedirs(self.log_dir, exist_ok=True)
 
     def log(self, msg, stream="console"):
         """Append to a log stream."""
@@ -672,6 +675,9 @@ class Logger:
         now = time.time()
         msg = asbytes(msg)
         self.streams[stream].append((now, msg))
+
+        with open(os.path.join(self.log_dir, stream), "ab") as f:
+            f.write(msg)
 
         for cb in self.callbacks:
             cb(msg, stream)
@@ -1376,13 +1382,14 @@ class CustomDockerConfig(StageConfig):
 
 class Config:
     def __init__(self, config):
-        allowed = {"stages", "startup_input"}
+        allowed = {"stages", "startup_input", "log_dir"}
         required = {"stages"}
         check_keys(allowed, required, config, type(self).__name__)
 
         check_list_of_dicts(config["stages"], "stages must be a list of dicts")
         self.stages = [StageConfig.read(stage) for stage in config["stages"]]
         self.startup_input = config.get("startup_input", "")
+        self.log_dir = config.get("log_dir", "/tmp/devcluster-logs")
 
 
 def main(config):
@@ -1392,7 +1399,7 @@ def main(config):
 
         stage_names = [stage_config.name for stage_config in config.stages]
 
-        logger = Logger(stage_names)
+        logger = Logger(stage_names, config.log_dir)
 
         state_machine = StateMachine(logger, poll)
 
