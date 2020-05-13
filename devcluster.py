@@ -51,17 +51,6 @@ def terminal_config():
         os.write(sys.stdout.fileno(), b'\x1b[?1049l')
 
 
-_gopath = None
-
-def get_gopath():
-    global _gopath
-    if _gopath is None:
-        p = subprocess.Popen(["go", "env", "GOPATH"], stdout=subprocess.PIPE)
-        _gopath = p.stdout.read().strip().decode("utf8")
-        assert p.wait() == 0
-    return _gopath
-
-
 _save_cursor = None
 
 def save_cursor():
@@ -1446,7 +1435,6 @@ if __name__ == "__main__":
         with open(default_path) as f:
             config = Config(yaml.safe_load(f.read()))
 
-    get_gopath()
 
     if "DET_PROJ" not in os.environ:
         print("you must specify the DET_PROJ environment variable", file=sys.stderr)
