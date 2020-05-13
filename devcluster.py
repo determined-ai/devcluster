@@ -1429,12 +1429,20 @@ if __name__ == "__main__":
         with open(args.config) as f:
             config = Config(yaml.safe_load(f.read()))
     else:
-        default_path = os.path.expanduser("~/.devcluster.yaml")
-        if not os.path.exists(default_path):
-            print("you must either specify --config or have a {default_path}", file=sys.stderr)
-        with open(default_path) as f:
-            config = Config(yaml.safe_load(f.read()))
-
+        check_paths = []
+        if "HOME" in os.environ:
+            check_paths.append(os.path.join(os.environ["HOME"], ".devcluster.yaml"))
+        if "XDG_CONFIG_HOME" in os.environ:
+            check_paths.append(os.path.join(os.environ["XDG_CONFIG_HOME"], "devcluster.yaml"))
+        for path in check_paths:
+            if os.path.exists(path):
+                with open(path) as f:
+                    config = Config(yaml.safe_load(f.read()))
+                    break
+        else:
+            print("you must either specify --config or use the file", " or ".join(check_paths),
+                    file=sys.stderr)
+            sys.exit(1)
 
     if "DET_PROJ" not in os.environ:
         print("you must specify the DET_PROJ environment variable", file=sys.stderr)
