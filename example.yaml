@@ -1,15 +1,15 @@
 # startup_input is how you configure the UI.  It's literally just a set of keys
-# that will be passed into the UI as if you typed them.  These keys will turn
-# off the db and hasura logs:
-# startup_input: "!@"
+# that will be passed into the UI as if you typed them.  This key will turn
+# off the db logs:
+# startup_input: "!"
 
 # log_dir is where persistent logs are written to.
 # log_dir: /tmp/devcluster-logs
 
-# stages is the key configuration of the whole cluster.  Each stage must be
+# stages is the configuration of the whole cluster.  Each stage must be
 # completed before moving to the next stage, so order matters.  This example
-# assumes that devcluster.py is responsible for the database and hasura, but
-# if you wanted to run them externally then you could just remove them here.
+# assumes that devcluster.py is responsible for the database, but if you wanted
+# to run it externally then you could just remove the "db" stage here.
 stages:
 
   # db is predefined type of stage specific to how determined runs the
@@ -22,38 +22,6 @@ stages:
 
       # data_dir is where the persistent files will be saved to.
       data_dir: ~/.postgres
-
-  # There is no predefined stage for hasura since hasura is going away, so this
-  # is what a fully-custom stage looks like.
-  - custom_docker:
-      name: hausra
-      container_name: determined_hasura
-      run_args:
-        - -p
-        - 8081:8080
-        - -e
-        - HASURA_GRAPHQL_ADMIN_SECRET=hasura
-        - -e
-        # NOTE: you need to put in a host address for postgres which is
-        # resolvable from inside docker.  I have been using my laptop's
-        # external IP address, 192.168.0.4, but mac users here could use
-        # host.docker.internal here
-        - HASURA_GRAPHQL_DATABASE_URL=postgres://postgres:postgres@MY_IP_ADDR:5432/determined
-        - -e
-        - HASURA_GRAPHQL_ENABLE_CONSOLE=true
-        - -e
-        - HASURA_GRAPHQL_ENABLE_TELEMETRY=false
-        - -e
-        - HASURA_GRAPHQL_CONSOLE_ASSETS_DIR=/srv/console-assets
-        - -e
-        - HASURA_GRAPHQL_LOG_LEVEL=warn
-        - hasura/graphql-engine:v1.1.0
-      # post is a list of
-      post:
-        # conncheck is a type of post command that will return after a server
-        # becomes available on a certain port
-        - conncheck:
-            port: 8081
 
   # master is a predefined type of stage for to how determined runs the master.
   - master:
@@ -72,9 +40,6 @@ stages:
           password: postgres
           user: postgres
           name: determined
-        hasura:
-          address: localhost:8081
-          secret: hasura
         checkpoint_storage:
           type: shared_fs
           host_path: /tmp
