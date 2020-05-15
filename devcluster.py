@@ -347,6 +347,10 @@ class Stage:
         pass
 
     @abc.abstractmethod
+    def reset(self):
+        pass
+
+    @abc.abstractmethod
     def get_precommand(self):
         """Return the next AtomicOperation or None, at which point it is safe to run_command)."""
         pass
@@ -382,6 +386,9 @@ class DeadStage(Stage):
         self._running = False
         self.state_machine.next_thing()
 
+    def reset(self):
+        pass
+
     def get_precommand(self):
         pass
 
@@ -407,7 +414,7 @@ class Process(Stage):
         self.logger = logger
         self.state_machine = state_machine
 
-        self._reset()
+        self.reset()
 
     def wait(self):
         return self.proc.wait()
@@ -424,7 +431,7 @@ class Process(Stage):
             self.logger.log(f"{self.log_name()} exited with {ret}\n")
             self.logger.log(f" ----- {self.log_name()} exited with {ret} -----\n", self.log_name())
             self.proc = None
-            self._reset()
+            self.reset()
             self.state_machine.next_thing()
 
     def _handle_out(self, ev):
@@ -493,7 +500,7 @@ class Process(Stage):
     def log_name(self):
         return self.config.name
 
-    def _reset(self):
+    def reset(self):
         self.precmds_run = 0
         self.postcmds_run = 0
 
@@ -644,7 +651,7 @@ class DockerProcess(Process):
         # doesn't block.
         if self.proc is None:
             self.docker_wait()
-            self._reset()
+            self.reset()
             self.state_machine.next_thing()
 
 
@@ -774,6 +781,7 @@ class StateMachine:
                 if self.stages[self.state].killable():
                     self.stages[self.state].kill()
                 else:
+                    self.stages[self.state].reset()
                     self.transition(self.state - 1)
 
         # Notify changes of state.
