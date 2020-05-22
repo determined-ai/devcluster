@@ -1001,13 +1001,16 @@ class Console:
     def erase_line(self):
         return b'\x1b[2K'
 
+    def cursor_up(self, n):
+        return b"\x1b[%dA"%n
+
     def erase_old_bar(self):
         rows = get_rows()
         return b"".join([
             save_cursor(),
-            self.place_cursor(rows - 2, 1),
+            self.place_cursor(get_rows(), 1),
             self.erase_line(),
-            self.place_cursor(rows - 1, 1),
+            self.cursor_up(1),
             self.erase_line(),
             restore_cursor(),
         ])
@@ -1088,10 +1091,10 @@ class Console:
                 [
                     self.erase_old_bar(),
                     prebar_bytes,
-                    # create 2 new lines and move up two lines
-                    b"\n\n\x1b[2A",
+                    b"\n\n",
+                    self.cursor_up(2),
                     save_cursor(),
-                    self.place_cursor(get_rows() - 2, 1),
+                    self.place_cursor(get_rows() - 1, 1),
                     bar_bytes,
                     restore_cursor(),
                 ]
