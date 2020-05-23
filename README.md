@@ -30,10 +30,25 @@ each different stage.
 `q` or `ctrl`+`c` once to quit, or twice to force-quit (which may leave
 dangling docker containers laying around).
 
+## Server/Client Mode
+
+You can run `devcluster.py` as a headless server:
+
+    python devcluster.py server --port 1234
+
+Sending a `SIGINT` (via `ctrl`+`c`) or a `SIGTERM` (via `kill`) will close it.
+
+You can also connect the UI to a headless server:
+
+    python devcluster.py client --port 1234
+
+In `client` mode, pressing `q` or `ctrl`+`c` will only close the UI; it will
+not affect the server.
+
 ## Philosophy
 
 `devcluster.py` tries as much as possible to be a standalone tool for running
-arbitrary versions of the determined cluster.  Currently it is only tested as
+arbitrary versions of the Determined cluster.  Currently it is only tested as
 far back as v0.12.3.
 
 Some defaults are kept up-to-date with tip-of-master to simplify the config
@@ -44,3 +59,4 @@ configurable and explicit.
 
 - make log view scrollable
 - support docker volumes
+- config file reloading

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import abc
+import base64
 import enum
 import time
 import sys
@@ -15,6 +16,8 @@ import socket
 import yaml
 import re
 import signal
+import json
+import pickle
 
 import subprocess
 import fcntl
@@ -656,14 +659,24 @@ class DockerProcess(Process):
 
 
 class Logger:
-    def __init__(self, streams, log_dir):
+    def __init__(self, streams, log_dir, init_streams=None, init_index=None):
         all_streams = ["console"] + streams
-        self.streams = {stream: [] for stream in all_streams}
-        self.index = {i: stream for i, stream in enumerate(all_streams)}
+
+        if init_streams is None:
+            self.streams = {stream: [] for stream in all_streams}
+        else:
+            self.streams = init_streams
+
+        if init_index is None:
+            self.index = {i: stream for i, stream in enumerate(all_streams)}
+        else:
+            self.index = init_index
+
         self.callbacks = []
 
         self.log_dir = log_dir
-        os.makedirs(self.log_dir, exist_ok=True)
+        if log_dir is not None:
+            os.makedirs(self.log_dir, exist_ok=True)
 
     def log(self, msg, stream="console"):
         """Append to a log stream."""
@@ -672,8 +685,9 @@ class Logger:
         msg = asbytes(msg)
         self.streams[stream].append((now, msg))
 
-        with open(os.path.join(self.log_dir, stream), "ab") as f:
-            f.write(msg)
+        if self.log_dir is not None:
+            with open(os.path.join(self.log_dir, stream), "ab") as f:
+                f.write(msg)
 
         for cb in self.callbacks:
             cb(msg, stream)
@@ -787,13 +801,17 @@ class StateMachine:
         # Notify changes of state.
         new_status = (self.state, self.atomic_op, self.target)
         if self.old_status != new_status:
-            state_str = self.stages[self.state].log_name().upper()
-            atomic_str = str(self.atomic_op) if self.atomic_op else ""
-            target_str = self.stages[self.target].log_name().upper()
+            state_str, atomic_str, target_str = self.gen_state_cb()
             for cb in self.callbacks:
                 cb(state_str, atomic_str, target_str)
 
             self.old_status = new_status
+
+    def gen_state_cb(self):
+        state_str = self.stages[self.state].log_name().upper()
+        atomic_str = str(self.atomic_op) if self.atomic_op else ""
+        target_str = self.stages[self.target].log_name().upper()
+        return state_str, atomic_str, target_str
 
     def set_target(self, target):
         """For when you choose a new target state."""
@@ -846,6 +864,230 @@ class StateMachine:
         return not (self.quitting and self.state == 0)
 
 
+class Connection:
+    def __init__(self, poll, sock, read_cb, close_cb, starting_buffer=b""):
+        self.poll = poll
+        self.sock = sock
+        self.read_cb = read_cb
+        self.close_cb = close_cb
+
+        self.buffer = starting_buffer
+
+        self.poll.register(self.sock.fileno(), Poll.IN_FLAGS, self.handle_sock)
+
+    def write(self, jmsg):
+        stuff = json.dumps(jmsg).encode("utf8") + b"\n"
+        self.sock.send(stuff)
+
+    def handle_sock(self, ev):
+        if ev & Poll.IN_FLAGS:
+            try:
+                new_bytes = self.sock.recv(4096)
+            except ConnectionError:
+                self.close()
+                return
+            if len(new_bytes) == 0:
+                self.close()
+                return
+            self.buffer += new_bytes
+            while b"\n" in self.buffer:
+                end = self.buffer.find(b"\n")
+                line = self.buffer[:end]
+                self.buffer = self.buffer[end + 1:]
+                jmsg = json.loads(line.decode("utf8"))
+                self.read_cb(jmsg)
+        elif ev & Poll.ERR_FLAGS:
+            self.close()
+
+    def close(self):
+        self.poll.unregister(self.handle_sock)
+        self.sock.close()
+        self.close_cb(self)
+
+
+class Server:
+    def __init__(self, config, bindhost, bindport):
+        self.poll = Poll()
+
+        self.listener = socket.socket()
+        self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.listener.bind((bindhost, bindport))
+        self.listener.listen()
+        self.poll.register(self.listener.fileno(), Poll.IN_FLAGS, self.handle_listener)
+
+        self.stage_names = [stage_config.name for stage_config in config.stages]
+
+        self.logger = Logger(self.stage_names, config.log_dir)
+        self.logger.add_callback(self.log_cb)
+
+        self.state_machine = StateMachine(self.logger, self.poll)
+        self.state_machine.add_callback(self.state_machine_cb)
+
+        for stage_config in config.stages:
+            self.state_machine.add_stage(
+                stage_config.build_stage(self.poll, self.logger, self.state_machine)
+            )
+
+        self.clients = set()
+
+    def run(self):
+        def _quit_signal(signum, frame):
+            """Enqueue a call to _quit_in_loop() via poll()."""
+            os.write(self.state_machine.get_report_fd(), b"Q")
+
+        def _quit_in_loop():
+            self.state_machine.quit()
+
+        self.state_machine.add_report_callback("Q", _quit_in_loop)
+        signal.signal(signal.SIGTERM, _quit_signal)
+        signal.signal(signal.SIGINT, _quit_signal)
+
+        self.state_machine.set_target(len(self.stage_names))
+
+        # TODO: handle startup_input in server mode
+        # for c in config.startup_input:
+        #     console.handle_key(c)
+
+        while self.state_machine.should_run():
+            self.poll.poll()
+
+    def handle_listener(self, ev):
+        if ev & Poll.IN_FLAGS:
+            # accept a connection
+            sock, _ = self.listener.accept()
+            client = Connection(
+                self.poll,
+                sock,
+                self.jmsg_cb,
+                self.client_conn_close_cb
+            )
+            self.clients.add(client)
+            # start by sending some initial state
+            init = {
+                "stages": [s.log_name() for s in self.state_machine.stages[1:]],
+                "logger_streams": self.logger.streams,
+                "logger_index": self.logger.index,
+                "first_state": self.state_machine.gen_state_cb(),
+            }
+            client.write({"init": base64.b64encode(pickle.dumps(init)).decode('utf8')})
+
+        elif ev & Poll.ERR_FLAGS:
+            raise ValueError("listener failed!")
+
+    def jmsg_cb(self, jmsg):
+        for k, v in jmsg.items():
+            if k == "set_target":
+                self.state_machine.set_target(v)
+            elif k == "quit":
+                self.state_machine.quit()
+            else:
+                raise ValueError(f"invalid jmsg: {k}\n")
+
+    def log_cb(self, msg, stream):
+        # the server listens to log callbacks and broadcasts them to all clients
+        jmsg = {"log_cb": [base64.b64encode(msg).decode("utf8"), stream]}
+        for client in self.clients:
+            client.write(jmsg)
+
+    def state_machine_cb(self, state, atomic, target):
+        # the server listens to state machine callbacks and broadcasts them to all clients
+        jmsg = {"state_cb": [state, atomic, target]}
+        for client in self.clients:
+            client.write(jmsg)
+
+    def client_conn_close_cb(self, client):
+        self.clients.remove(client)
+
+
+class Client:
+    def __init__(self, host, port):
+        sock = socket.socket()
+        sock.connect((host, port))
+
+        buf = b""
+        while b"\n" not in buf:
+            new_bytes = sock.recv(4096)
+            if len(new_bytes) == 0:
+                raise ValueError("connection closed during initial download")
+            buf += new_bytes
+
+        end = buf.find(b"\n")
+        line = buf[:end]
+        buf = buf[end + 1:]
+
+        jmsg = json.loads(line.decode('utf8'))
+        init = pickle.loads(base64.b64decode(jmsg["init"]))
+        self.first_state = init["first_state"]
+
+        self.poll = Poll()
+
+        self.logger = Logger(init["stages"], None, init["logger_streams"], init["logger_index"])
+        self.console = Console(self.logger, self.poll, init["stages"], self.set_target, self.quit)
+
+        self.server = Connection(
+            self.poll,
+            sock,
+            self.jmsg_cb,
+            self.server_conn_close_cb,
+            starting_buffer=buf,
+        )
+
+        # this is primarily used by the SIGWINCH handler
+        self.pipe_rd, self.pipe_wr = os.pipe()
+        nonblock(self.pipe_rd)
+        nonblock(self.pipe_wr)
+        self.poll.register(self.pipe_rd, Poll.IN_FLAGS, self.handle_pipe)
+
+        def _sigwinch_handler(signum, frame):
+            """Enqueue a call to _sigwinch_callback() via self.poll()."""
+            os.write(self.pipe_wr, b"W")
+
+        signal.signal(signal.SIGWINCH, _sigwinch_handler)
+
+        self.keep_going = True
+
+    def run(self):
+        self.console.start()
+        self.console.state_cb(*self.first_state)
+
+        for c in config.startup_input:
+            self.console.handle_key(c)
+
+        while self.keep_going:
+            self.poll.poll()
+
+    def handle_pipe(self, ev):
+        if ev & Poll.IN_FLAGS:
+            buf = self.pipe_rd.read(4096)
+            for c in buf:
+                if c == "W":
+                    # SIGWINCH
+                    self.console.handle_window_change()
+                else:
+                    raise ValueError(f"invalid value in Client.handle_pipe(): {c}")
+        elif ev & Poll.ERR_FLAGS:
+            raise ValueError("stdin closed!")
+
+    def jmsg_cb(self, jmsg):
+        for key, value in jmsg.items():
+            if key == "log_cb":
+                # replay logs through our own Logger
+                self.logger.log(base64.b64decode(value[0]), value[1])
+            elif key == "state_cb":
+                self.console.state_cb(*value)
+            else:
+                raise ValueError(f"unexpected jmsg: {key}")
+
+    def server_conn_close_cb(self, server_conn):
+        raise ValueError("Connection to server closed")
+
+    def set_target(self, idx):
+        self.server.write({"set_target": idx})
+
+    def quit(self):
+        self.keep_going = False
+
+
 def fore_rgb(rgb):
     return b'\x1b[38;2;%d;%d;%dm'%(rgb >> 16, (rgb & 0xff00) >> 8, rgb & 0xff)
 
@@ -862,22 +1104,32 @@ res = b'\x1b[m'
 
 
 class Console:
-    def __init__(self, logger, poll, state_machine):
+    def __init__(self, logger, poll, stages, set_target_cb, quit_cb):
         self.logger = logger
         self.logger.add_callback(self.log_cb)
 
         self.poll = poll
         self.poll.register(sys.stdin.fileno(), Poll.IN_FLAGS, self.handle_stdin)
 
-        self.state_machine = state_machine
-        state_machine.add_callback(self.state_cb)
+        self.stages = ["dead"] + stages
+        self.set_target_cb = set_target_cb
+        self.quit_cb = quit_cb
 
         self.status = ("state", "substate", "target")
 
         # default to all streams active
         self.active_streams = set(self.logger.streams)
 
+    def start(self):
         self.redraw()
+
+    def log_cb(self, msg, stream):
+        if stream in self.active_streams:
+            self.print_bar(msg)
+
+    def state_cb(self, state, substate, target):
+        self.status = (state, substate, target)
+        self.print_bar()
 
     def redraw(self):
         # assume at least 1 in 2 log packets has a newline (we just need to fill up a screen)
@@ -915,18 +1167,10 @@ class Console:
 
         self.redraw()
 
-    def log_cb(self, msg, stream):
-        if stream in self.active_streams:
-            self.print_bar(msg)
-
-    def state_cb(self, state, substate, target):
-        self.status = (state, substate, target)
-        self.print_bar()
-
     def try_set_target(self, idx):
-        if idx >= len(self.state_machine.stages):
+        if idx >= len(self.stages):
             return
-        self.state_machine.set_target(idx)
+        self.set_target_cb(idx)
 
     def try_toggle_stream(self, idx):
         if idx not in self.logger.index:
@@ -935,9 +1179,9 @@ class Console:
 
     def handle_key(self, key):
         if key == '\x03':
-            self.state_machine.quit()
+            self.quit_cb()
         elif key == "q":
-            self.state_machine.quit()
+            self.quit_cb()
 
         # 0-9: set target state
         elif key == "0" or key == "`":
@@ -984,8 +1228,11 @@ class Console:
             self.try_toggle_stream(9)
 
     def handle_stdin(self, ev):
-        key = sys.stdin.read(1)
-        self.handle_key(key)
+        if ev & Poll.IN_FLAGS:
+            key = sys.stdin.read(1)
+            self.handle_key(key)
+        elif ev & Poll.ERR_FLAGS:
+            raise ValueError("stdin closed!")
 
     def place_cursor(self, row, col):
         return b'\x1b[%d;%dH'%(row, col)
@@ -1007,23 +1254,23 @@ class Console:
         bar1 = b"state: "
         # printable length
         bar1_len = len(bar1)
-        for i, stage in enumerate(self.state_machine.stages):
+        for i, stage in enumerate(self.stages):
             # Active stage is orange
-            if stage.log_name().lower() == state.lower():
+            if stage.lower() == state.lower():
                 color = orange
             else:
                 color = blue
 
             # Target stage is donoted with <
-            if stage.log_name().lower() == target.lower():
+            if stage.lower() == target.lower():
                 post = b"< "
             else:
                 post = b"  "
 
             # TODO: truncate this properly for narrow consoles
             binding = b"  (`)" if i == 0 else b"  (%d)"%i
-            bar1 += binding + color + asbytes(stage.log_name().upper()) + blue + post
-            bar1_len += 7 + len(stage.log_name())
+            bar1 += binding + color + asbytes(stage.upper()) + blue + post
+            bar1_len += 7 + len(stage)
 
         # fill bar
         bar1 += b" " * (cols - bar1_len)
@@ -1049,9 +1296,9 @@ class Console:
         def get_log_name(name):
             return "console" if name == "dead" else name
 
-        for i, stage in enumerate(self.state_machine.stages):
+        for i, stage in enumerate(self.stages):
             binding = get_binding(i)
-            name = get_log_name(stage.log_name())
+            name = get_log_name(stage)
 
             if name in self.active_streams:
                 color = orange
@@ -1300,7 +1547,6 @@ class LogCheckConfig:
 
         # confirm that the regex is compilable
         pattern = re.compile(asbytes(self.regex))
-        assert pattern.findall(b"asdfasdfdatabase system is ready to accept connections")
 
     def build_atomic(self, poll, logger, stream, report_fd):
         # Allow the configured stream to overwrite the default stream.
@@ -1387,8 +1633,7 @@ class Config:
         self.log_dir = config.get("log_dir", "/tmp/devcluster-logs")
 
 
-def main(config):
-
+def standalone_main(config):
     with terminal_config():
         poll = Poll()
 
@@ -1398,7 +1643,8 @@ def main(config):
 
         state_machine = StateMachine(logger, poll)
 
-        console = Console(logger, poll, state_machine)
+        console = Console(logger, poll, stage_names, state_machine.set_target, state_machine.quit)
+        state_machine.add_callback(console.state_cb)
 
         def _sigwinch_handler(signum, frame):
             """Enqueue a call to _sigwinch_callback() via poll()."""
@@ -1415,7 +1661,7 @@ def main(config):
             state_machine.add_stage(stage_config.build_stage(poll, logger, state_machine))
 
         # Draw the screen ASAP
-        console.redraw()
+        console.start()
 
         state_machine.set_target(len(stage_names))
 
@@ -1426,11 +1672,35 @@ def main(config):
             poll.poll()
 
 
+def server_main(config, host, port):
+    Server(config, host, port).run()
+
+
+def client_main(host, port):
+    client = Client(host, port)
+    with terminal_config():
+        client.run()
+
+
 if __name__ == "__main__":
+
+    modes = {"standalone", "server", "client"}
 
     parser = argparse.ArgumentParser()
     parser.add_argument('-c', '--config', dest='config', action='store')
+    parser.add_argument('-p', '--port', dest='port', action='store', type=int, default=None)
+    parser.add_argument(
+        'mode', nargs='?', default="standalone", choices=["standalone", "server", "client"]
+    )
     args = parser.parse_args()
+
+    # Validate mode
+    if args.mode == "standalone" and args.port is not None:
+        print("--port is not allowed with standalone mode", file=sys.stderr)
+        sys.exit(1)
+    if args.mode != "standalone" and args.port is None:
+        print(f"--port is required with {args.mode} mode", file=sys.stderr)
+        sys.exit(1)
 
     # Read config before the chdir()
     if args.config is not None:
@@ -1457,4 +1727,9 @@ if __name__ == "__main__":
         sys.exit(1)
     os.chdir(os.environ["DET_PROJ"])
 
-    main(config)
+    if args.mode == "standalone":
+        standalone_main(config)
+    elif args.mode == "server":
+        server_main(config, "localhost", args.port)
+    elif args.mode == "client":
+        client_main("localhost", args.port)
