@@ -51,17 +51,6 @@ def terminal_config():
         os.write(sys.stdout.fileno(), b'\x1b[?1049l')
 
 
-_clear_screen = None
-
-def clear_screen():
-    global _clear_screen
-    if _clear_screen is None:
-        p = subprocess.Popen(["tput", "clear"], stdout=subprocess.PIPE)
-        _clear_screen = p.stdout.read().strip()
-        assert p.wait() == 0
-    return _clear_screen
-
-
 _save_cursor = None
 
 def save_cursor():
@@ -891,14 +880,17 @@ class Console:
         self.redraw()
 
     def redraw(self):
+        # assume at least 1 in 2 log packets has a newline (we just need to fill up a screen)
+        tail_len = get_cols() * 2
+
         # build new log output
         new_logs = []
         for stream in self.active_streams:
-            new_logs.extend(self.logger.streams[stream])
+            new_logs.extend(self.logger.streams[stream][-tail_len:])
         # sort the streams chronologically
         new_logs.sort(key=lambda x: x[0])
 
-        prebar_bytes = clear_screen() + self.place_cursor(1, 1)
+        prebar_bytes = self.erase_screen() + self.place_cursor(3, 1)
         prebar_bytes += b"".join(x[1] for x in new_logs)
         self.print_bar(prebar_bytes)
 
@@ -1001,16 +993,8 @@ class Console:
     def erase_line(self):
         return b'\x1b[2K'
 
-    def erase_old_bar(self):
-        rows = get_rows()
-        return b"".join([
-            save_cursor(),
-            self.place_cursor(rows - 2, 1),
-            self.erase_line(),
-            self.place_cursor(rows - 1, 1),
-            self.erase_line(),
-            restore_cursor(),
-        ])
+    def erase_screen(self):
+        return b'\x1b[2J'
 
     def print_bar(self, prebar_bytes=b""):
         cols = get_cols()
@@ -1086,12 +1070,10 @@ class Console:
             sys.stdout.fileno(),
             b"".join(
                 [
-                    self.erase_old_bar(),
                     prebar_bytes,
-                    # create 2 new lines and move up two lines
-                    b"\n\n\x1b[2A",
                     save_cursor(),
-                    self.place_cursor(get_rows() - 2, 1),
+                    self.place_cursor(1, 1),
+                    self.erase_line(),
                     bar_bytes,
                     restore_cursor(),
                 ]
