@@ -54,8 +54,48 @@ def standalone_main(config):
             poll.poll()
 
 
-def server_main(config, host, port):
-    dc.Server(config, host, port).run()
+class Oneshot:
+    """
+    Watch the state to print a message when the final state is up and to quit if anything fails.
+    """
+
+    def __init__(self, quit_cb):
+        self.first_target = None
+        self.up = False
+        self.failing = False
+        self.quit_cb = quit_cb
+
+    def state_cb(self, state, substate, target):
+        if self.first_target is None:
+            self.first_target = target
+
+        # Did we reach the target stat?
+        if state == self.first_target and substate == "" and not self.up:
+            self.up = True
+            print("cluster is up")
+
+        # Is the cluster failing?
+        if target != self.first_target and not self.failing:
+            self.failing = True
+            print("cluster is failing")
+            self.quit_cb()
+
+
+def server_main(config, host, port, oneshot_mode):
+    server = dc.Server(config, host, port)
+
+    if oneshot_mode:
+
+        # In case of a signal state_machine.quit() may have been called, so we check try to detect
+        # if we need to call quit or not from the Oneshot.
+        def quit_cb():
+            if not server.state_machine.quitting:
+                server.state_machine.quit()
+
+        oneshot = Oneshot(quit_cb)
+        server.state_machine.add_callback(oneshot.state_cb)
+
+    server.run()
 
 
 def client_main(host, port):
@@ -84,6 +124,7 @@ def lockfile(filename):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-c", "--config", dest="config", action="store")
+    parser.add_argument("-1", "--oneshot", dest="oneshot", action="store_true")
     parser.add_argument(
         "-p", "--port", dest="port", action="store", type=int, default=None
     )
@@ -101,6 +142,11 @@ def main():
         sys.exit(1)
     if args.mode != "standalone" and args.port is None:
         print(f"--port is required with {args.mode} mode", file=sys.stderr)
+        sys.exit(1)
+
+    # Validate oneshot.
+    if args.oneshot and args.mode != "server":
+        print("--oneshot is only supported in server mode", file=sys.stderr)
         sys.exit(1)
 
     # Read config before the chdir()
@@ -133,15 +179,16 @@ def main():
         sys.exit(1)
     os.chdir(os.environ["DET_PROJ"])
 
-    os.makedirs(config.temp_dir, exist_ok=True)
-    with lockfile(os.path.join(config.temp_dir, "lock")):
-
-        if args.mode == "standalone":
+    if args.mode == "standalone":
+        os.makedirs(config.temp_dir, exist_ok=True)
+        with lockfile(os.path.join(config.temp_dir, "lock")):
             standalone_main(config)
-        elif args.mode == "server":
-            server_main(config, "localhost", args.port)
-        elif args.mode == "client":
-            client_main("localhost", args.port)
+    elif args.mode == "server":
+        os.makedirs(config.temp_dir, exist_ok=True)
+        with lockfile(os.path.join(config.temp_dir, "lock")):
+            server_main(config, "localhost", args.port, args.oneshot)
+    elif args.mode == "client":
+        client_main("localhost", args.port)
 
 
 if __name__ == "__main__":
