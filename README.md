@@ -1,4 +1,4 @@
-# devcluster.py
+# `devcluster`
 
 A developer tool for running the Determined cluster.  Definitely still a WIP.
 
@@ -13,12 +13,16 @@ the `DET_PROJ` environment variable (see `Running`, below).
 
 ## Running
 
-You will need to set the `DET_PROJ` environment variable.  `devcluster.py` will
+You can run the code from the git root by running `python -m devcluster`, or
+install it into your python environment with `pip install -e .` and then just
+call `devcluster` by itself.
+
+You will need to set the `DET_PROJ` environment variable.  `devcluster` will
 `cd` into that directory after reading the `--config` option on the command
 line but before doing anything else.
 
 You can either specify a config file via the `--config` or `-c` option, or
-`devcluster.py` will try to read the default config file at
+`devcluster` will try to read the default config file at
 `~/.devcluster.yaml`.
 
 ## Keybindings
@@ -32,22 +36,22 @@ dangling docker containers laying around).
 
 ## Server/Client Mode
 
-You can run `devcluster.py` as a headless server:
+You can run `devcluster` as a headless server:
 
-    python devcluster.py server --port 1234
+    python -m devcluster server --port 1234
 
 Sending a `SIGINT` (via `ctrl`+`c`) or a `SIGTERM` (via `kill`) will close it.
 
 You can also connect the UI to a headless server:
 
-    python devcluster.py client --port 1234
+    python -m devcluster client --port 1234
 
 In `client` mode, pressing `q` or `ctrl`+`c` will only close the UI; it will
 not affect the server.
 
 ## Philosophy
 
-`devcluster.py` tries as much as possible to be a standalone tool for running
+`devcluster` tries as much as possible to be a standalone tool for running
 arbitrary versions of the Determined cluster.  Currently it is only tested as
 far back as v0.12.3.
 
