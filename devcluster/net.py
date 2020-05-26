@@ -63,7 +63,7 @@ class Server:
 
         self.stage_names = [stage_config.name for stage_config in config.stages]
 
-        self.logger = dc.Logger(self.stage_names, config.log_dir)
+        self.logger = dc.Logger(self.stage_names, config.temp_dir)
         self.logger.add_callback(self.log_cb)
 
         self.state_machine = dc.StateMachine(self.logger, self.poll)

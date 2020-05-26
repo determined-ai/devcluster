@@ -110,7 +110,7 @@ class Logger:
         self.streams[stream].append((now, msg))
 
         if self.log_dir is not None:
-            with open(os.path.join(self.log_dir, stream), "ab") as f:
+            with open(os.path.join(self.log_dir, stream + ".log"), "ab") as f:
                 f.write(msg)
 
         for cb in self.callbacks:

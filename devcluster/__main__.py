@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
 import argparse
+import contextlib
+import fcntl
 import os
 import signal
 import sys
@@ -15,7 +17,7 @@ def standalone_main(config):
 
         stage_names = [stage_config.name for stage_config in config.stages]
 
-        logger = dc.Logger(stage_names, config.log_dir)
+        logger = dc.Logger(stage_names, config.temp_dir)
 
         state_machine = dc.StateMachine(logger, poll)
 
@@ -60,6 +62,23 @@ def client_main(host, port):
     client = dc.Client(host, port)
     with dc.terminal_config():
         client.run()
+
+
+@contextlib.contextmanager
+def lockfile(filename):
+    with open(filename, "w") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            print(
+                f"{filename} is already locked, is another devcluster running?",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def main():
@@ -114,12 +133,15 @@ def main():
         sys.exit(1)
     os.chdir(os.environ["DET_PROJ"])
 
-    if args.mode == "standalone":
-        standalone_main(config)
-    elif args.mode == "server":
-        server_main(config, "localhost", args.port)
-    elif args.mode == "client":
-        client_main("localhost", args.port)
+    os.makedirs(config.temp_dir, exist_ok=True)
+    with lockfile(os.path.join(config.temp_dir, "lock")):
+
+        if args.mode == "standalone":
+            standalone_main(config)
+        elif args.mode == "server":
+            server_main(config, "localhost", args.port)
+        elif args.mode == "client":
+            client_main("localhost", args.port)
 
 
 if __name__ == "__main__":

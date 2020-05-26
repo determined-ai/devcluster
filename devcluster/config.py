@@ -34,7 +34,7 @@ def read_path(path):
 
 class StageConfig:
     @staticmethod
-    def read(config):
+    def read(config, temp_dir):
         allowed = {"db", "master", "agent", "custom", "custom_docker"}
         # required = set()
 
@@ -52,9 +52,9 @@ class StageConfig:
         elif typ == "db":
             return DBConfig(val)
         elif typ == "master":
-            return MasterConfig(val)
+            return MasterConfig(val, temp_dir)
         elif typ == "agent":
-            return AgentConfig(val)
+            return AgentConfig(val, temp_dir)
 
     @abc.abstractmethod
     def build_stage(self):
@@ -141,8 +141,8 @@ class DBConfig(StageConfig):
 
 
 class MasterConfig(StageConfig):
-    def __init__(self, config):
-        allowed = {"pre", "binary", "config_file"}
+    def __init__(self, config, temp_dir):
+        allowed = {"pre", "post", "binary", "config_file"}
         required = set()
         check_keys(allowed, required, config, type(self).__name__)
 
@@ -152,13 +152,15 @@ class MasterConfig(StageConfig):
             config.get("pre", []), "CustomConfig.pre must be a list of dicts"
         )
         self.pre = config.get("pre", [])
+        self.post = config.get("post", [{"conncheck": {"port": 8080}}])
 
         self.binary = read_path(config.get("binary", "master/build/determined-master"))
 
         self.name = "master"
+        self.temp_dir = temp_dir
 
     def build_stage(self, poll, logger, state_machine):
-        config_path = "/tmp/devcluster-master.conf"
+        config_path = os.path.join(self.temp_dir, "master.conf")
         with open(config_path, "w") as f:
             f.write(yaml.dump(self.config_file))
 
@@ -174,7 +176,7 @@ class MasterConfig(StageConfig):
                 "name": "master",
                 "pre": self.pre,
                 # TODO: don't hardcode 8080
-                "post": [{"conncheck": {"port": 8080}}],
+                "post": self.post,
             }
         )
 
@@ -182,7 +184,7 @@ class MasterConfig(StageConfig):
 
 
 class AgentConfig(StageConfig):
-    def __init__(self, config):
+    def __init__(self, config, temp_dir):
         allowed = {"pre", "binary", "config_file"}
         required = set()
         check_keys(allowed, required, config, type(self).__name__)
@@ -197,9 +199,10 @@ class AgentConfig(StageConfig):
         self.pre = config.get("pre", [])
 
         self.name = "agent"
+        self.temp_dir = temp_dir
 
     def build_stage(self, poll, logger, state_machine):
-        config_path = "/tmp/devcluster-agent.conf"
+        config_path = os.path.join(self.temp_dir, "agent.conf")
         with open(config_path, "w") as f:
             f.write(yaml.dump(self.config_file))
 
@@ -324,11 +327,14 @@ class CustomDockerConfig(StageConfig):
 
 class Config:
     def __init__(self, config):
-        allowed = {"stages", "startup_input", "log_dir"}
+        allowed = {"stages", "startup_input", "temp_dir"}
         required = {"stages"}
         check_keys(allowed, required, config, type(self).__name__)
 
+        self.temp_dir = config.get("temp_dir", "/tmp/devcluster")
+
         check_list_of_dicts(config["stages"], "stages must be a list of dicts")
-        self.stages = [StageConfig.read(stage) for stage in config["stages"]]
+        self.stages = [
+            StageConfig.read(stage, self.temp_dir) for stage in config["stages"]
+        ]
         self.startup_input = config.get("startup_input", "")
-        self.log_dir = config.get("log_dir", "/tmp/devcluster-logs")
