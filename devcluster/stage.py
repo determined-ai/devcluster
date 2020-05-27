@@ -323,7 +323,7 @@ class DockerProcess(Process):
 
     def kill(self):
         self.dying = True
-        kill_cmd = ["docker", "kill", self.config.container_name]
+        kill_cmd = ["docker", "kill", "--signal=TERM", self.config.container_name]
         p = subprocess.Popen(
             kill_cmd,
             stdin=subprocess.DEVNULL,
