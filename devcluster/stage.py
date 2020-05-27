@@ -161,6 +161,8 @@ class Process(Stage):
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            # Run with a different process group to isolate from signals in the parent process.
+            preexec_fn=os.setpgrp,
         )
         self.out = self.proc.stdout.fileno()
         self.err = self.proc.stderr.fileno()
@@ -239,6 +241,8 @@ class DockerProcess(Process):
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            # Run with a different process group to isolate from signals in the parent process.
+            preexec_fn=os.setpgrp,
         )
         self.out = self.proc.stdout.fileno()
         self.err = self.proc.stderr.fileno()

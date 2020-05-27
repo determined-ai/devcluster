@@ -79,6 +79,8 @@ class Server:
     def run(self):
         def _quit_signal(signum, frame):
             """Enqueue a call to _quit_in_loop() via poll()."""
+            # import traceback
+            # traceback.print_stack(frame)
             os.write(self.state_machine.get_report_fd(), b"Q")
 
         def _quit_in_loop():
