@@ -2,6 +2,7 @@ import base64
 import json
 import os
 import pickle
+import traceback
 import signal
 import socket
 
@@ -76,11 +77,15 @@ class Server:
 
         self.clients = set()
 
+        # Write a traceback to stdout on SIGUSR1 (10)
+        def _traceback_signal(signum, frame):
+            traceback.print_stack(frame)
+
+        signal.signal(signal.SIGUSR1, _traceback_signal)
+
     def run(self):
         def _quit_signal(signum, frame):
             """Enqueue a call to _quit_in_loop() via poll()."""
-            # import traceback
-            # traceback.print_stack(frame)
             os.write(self.state_machine.get_report_fd(), b"Q")
 
         def _quit_in_loop():
@@ -193,6 +198,15 @@ class Client:
 
         signal.signal(signal.SIGWINCH, _sigwinch_handler)
 
+        self.tracebacks = []
+
+        # Write a traceback to console output on SIGUSR1 (10)
+        def _traceback_signal(signum, frame):
+            self.tracebacks.append(traceback.format_stack(frame))
+            os.write(self.pipe_wr, b"T")
+
+        signal.signal(signal.SIGUSR1, _traceback_signal)
+
         self.keep_going = True
 
     def run(self):
@@ -212,6 +226,11 @@ class Client:
                 if c == "W":
                     # SIGWINCH
                     self.console.handle_window_change()
+                elif c == "T":
+                    # SIGUSR1, or "print me a stack trace"
+                    for t in self.tracebacks:
+                        self.logger.log(t)
+                    self.tracbacks = []
                 else:
                     raise ValueError(f"invalid value in Client.handle_pipe(): {c}")
         elif ev & dc.Poll.ERR_FLAGS:

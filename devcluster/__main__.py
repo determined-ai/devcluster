@@ -4,6 +4,7 @@ import argparse
 import contextlib
 import fcntl
 import os
+import traceback
 import signal
 import sys
 import yaml
@@ -12,6 +13,14 @@ import devcluster as dc
 
 
 def standalone_main(config):
+    # Write a traceback to stdout on SIGUSR1 (10)
+    def _traceback_signal(signum, frame):
+        with open(os.path.join(config.temp_dir, "traceback"), "a") as f:
+            f.write("------\n")
+            traceback.print_stack(frame, file=f)
+
+    signal.signal(signal.SIGUSR1, _traceback_signal)
+
     with dc.terminal_config():
         poll = dc.Poll()
 
