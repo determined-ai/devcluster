@@ -203,6 +203,15 @@ class DockerProcess(Process):
         # main subprocess hasn't even been launched.
         self.docker_started = False
 
+    def after_container_start(self, success):
+        self.docker_started = success
+        if not success:
+            self.logger.log(
+                "failed to start a docker container, possibly try:\n\n"
+                f"    docker kill {self.config.container_name} "
+                f"&& docker container rm {self.config.container_name}\n\n"
+            )
+
     def get_precommand(self):
         # Inherit the precmds behavior from Process.
         precmd = super().get_precommand()
@@ -210,7 +219,6 @@ class DockerProcess(Process):
             return precmd
 
         if not self.docker_started:
-            self.docker_started = True
             # Add in a new atomic for starting the docker container.
             run_args = [
                 "docker",
@@ -227,6 +235,7 @@ class DockerProcess(Process):
                 self.log_name(),
                 self.state_machine.get_report_fd(),
                 run_args,
+                callbacks=[self.after_container_start],
             )
 
         return None

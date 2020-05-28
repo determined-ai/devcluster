@@ -119,11 +119,12 @@ class LogCheck(AtomicOperation):
 
 
 class AtomicSubprocess(AtomicOperation):
-    def __init__(self, poll, logger, stream, report_fd, cmd, quiet=False):
+    def __init__(self, poll, logger, stream, report_fd, cmd, quiet=False, callbacks=()):
         self.poll = poll
         self.logger = logger
         self.stream = stream
         self.report_fd = report_fd
+        self.callbacks = callbacks
 
         self.start_time = time.time()
 
@@ -166,6 +167,9 @@ class AtomicSubprocess(AtomicOperation):
                     self.stream,
                 )
                 success = True
+
+            for cb in self.callbacks:
+                cb(success)
 
             os.write(self.report_fd, b"S" if success else b"F")
 
