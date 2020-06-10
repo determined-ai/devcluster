@@ -28,9 +28,10 @@ stages:
   # master is a predefined type of stage for to how determined runs the master.
   - master:
       # pre is a set of precommands to be run before starting the master.
-      # In this case those commands are just a pair of make targets, specified
+      # In this case those commands are just a few make targets, specified
       # as shell commands.
       pre:
+        - sh: make -C proto build
         - sh: make -C master build
         - sh: make -C tools prep-root
 
