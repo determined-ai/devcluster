@@ -27,12 +27,13 @@ You can either specify a config file via the `--config` or `-c` option, or
 
 ## Keybindings
 
-Keybindings are shown in the status bar, but in general and `1`-`4` on the
-keyboard set target states for the cluster, and `!`-`$` toggle log streams for
-each different stage.
-
-`q` or `ctrl`+`c` once to quit, or twice to force-quit (which may leave
-dangling docker containers laying around).
+- `1`-`3` set target states for the cluster (as shown in the status bar)
+- `!`-`#` toggle logs for the corresponding stage (as shown in the status bar)
+- `q` or `ctrl`+`c` once to quit, or twice to force-quit (which may leave
+  dangling docker containers laying around)
+- `u`/`d` will scroll up/down, and `U`/`D` will scroll up/down faster
+  Scrolling support is rudimentary and not line-aware; it will scroll by
+  literal log chunks, which may each be more or less than a line
 
 ## Server/Client Mode
 

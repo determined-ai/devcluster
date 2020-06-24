@@ -324,12 +324,20 @@ class Console:
         # default to all streams active
         self.active_streams = set(self.logger.streams)
 
+        # "scroll" = how many log chunks at the bottom of the current stream to not render
+        # TODO: do scroll by lines instead of by log chunks (which can be more or less than a line)
+        self.scroll = 0
+
     def start(self):
         self.redraw()
 
     def log_cb(self, msg, stream):
         if stream in self.active_streams:
-            self.print_bar(msg)
+            if self.scroll:
+                # don't tail the logs when we are scrolling
+                self.scroll += 1
+            else:
+                self.print_bar(msg)
 
     def state_cb(self, state, substate, target):
         self.status = (state, substate, target)
@@ -337,7 +345,7 @@ class Console:
 
     def redraw(self):
         # assume at least 1 in 2 log packets has a newline (we just need to fill up a screen)
-        tail_len = get_cols() * 2
+        tail_len = get_cols() * 2 + self.scroll
 
         # build new log output
         new_logs = []
@@ -345,6 +353,12 @@ class Console:
             new_logs.extend(self.logger.streams[stream][-tail_len:])
         # sort the streams chronologically
         new_logs.sort(key=lambda x: x[0])
+
+        # correct self.scroll if it is longer than the total number of logs we have to render
+        self.scroll = min(len(new_logs), self.scroll)
+
+        # don't render logs that we've scrolled past
+        new_logs = new_logs[: len(new_logs) - self.scroll]
 
         prebar_bytes = self.erase_screen() + self.place_cursor(3, 1)
         prebar_bytes += b"".join(x[1] for x in new_logs)
@@ -369,6 +383,7 @@ class Console:
         else:
             self.active_streams.remove(stream)
 
+        self.scroll = 0
         self.redraw()
 
     def try_set_target(self, idx):
@@ -430,6 +445,20 @@ class Console:
             self.try_toggle_stream(8)
         elif key == "(":
             self.try_toggle_stream(9)
+
+        # scrolling
+        elif key == "u":
+            self.scroll += 1
+            self.redraw()
+        elif key == "U":
+            self.scroll += 10
+            self.redraw()
+        elif key == "d":
+            self.scroll = max(0, self.scroll - 1)
+            self.redraw()
+        elif key == "D":
+            self.scroll = max(0, self.scroll - 10)
+            self.redraw()
 
     def handle_stdin(self, ev):
         if ev & Poll.IN_FLAGS:
