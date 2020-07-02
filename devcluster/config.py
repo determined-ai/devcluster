@@ -142,7 +142,7 @@ class DBConfig(StageConfig):
 
 class MasterConfig(StageConfig):
     def __init__(self, config, temp_dir):
-        allowed = {"pre", "post", "binary", "config_file"}
+        allowed = {"pre", "post", "binary", "config_file", "name"}
         required = set()
         check_keys(allowed, required, config, type(self).__name__)
 
@@ -156,11 +156,11 @@ class MasterConfig(StageConfig):
 
         self.binary = read_path(config.get("binary", "master/build/determined-master"))
 
-        self.name = "master"
+        self.name = config.get("name", "master")
         self.temp_dir = temp_dir
 
     def build_stage(self, poll, logger, state_machine):
-        config_path = os.path.join(self.temp_dir, "master.conf")
+        config_path = os.path.join(self.temp_dir, f"{self.name}.conf")
         with open(config_path, "w") as f:
             f.write(yaml.dump(self.config_file))
 
@@ -173,7 +173,7 @@ class MasterConfig(StageConfig):
         custom_config = CustomConfig(
             {
                 "cmd": cmd,
-                "name": "master",
+                "name": self.name,
                 "pre": self.pre,
                 # TODO: don't hardcode 8080
                 "post": self.post,
@@ -185,7 +185,7 @@ class MasterConfig(StageConfig):
 
 class AgentConfig(StageConfig):
     def __init__(self, config, temp_dir):
-        allowed = {"pre", "binary", "config_file"}
+        allowed = {"pre", "binary", "config_file", "name"}
         required = set()
         check_keys(allowed, required, config, type(self).__name__)
 
@@ -198,11 +198,11 @@ class AgentConfig(StageConfig):
         )
         self.pre = config.get("pre", [])
 
-        self.name = "agent"
+        self.name = config.get("name", "agent")
         self.temp_dir = temp_dir
 
     def build_stage(self, poll, logger, state_machine):
-        config_path = os.path.join(self.temp_dir, "agent.conf")
+        config_path = os.path.join(self.temp_dir, f"{self.name}.conf")
         with open(config_path, "w") as f:
             f.write(yaml.dump(self.config_file))
 
@@ -213,7 +213,7 @@ class AgentConfig(StageConfig):
             config_path,
         ]
 
-        custom_config = CustomConfig({"cmd": cmd, "name": "agent", "pre": self.pre})
+        custom_config = CustomConfig({"cmd": cmd, "name": self.name, "pre": self.pre})
 
         return dc.Process(custom_config, poll, logger, state_machine)
 
