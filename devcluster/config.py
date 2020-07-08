@@ -2,6 +2,7 @@ import abc
 import re
 import yaml
 import os
+import contextlib
 
 import devcluster as dc
 
@@ -30,6 +31,47 @@ def read_path(path):
     if path is None:
         return None
     return os.path.expanduser(path)
+
+
+def read_vars(s):
+    """Read environment variables in the string."""
+    if s is None:
+        return None
+    return os.path.expandvars(path)
+
+
+@contextlib.contextmanager
+def override_env(extra_defs=None):
+    """Set some environment variables which will be cleaned up."""
+    if extra_defs is None:
+        yield
+        return
+
+    names, values = list(zip(*(extra_defs.items())))
+    originals = [os.environ.get(n) for n in names]
+    os.environ.update(extra_defs)
+    try:
+        yield
+    finally:
+        for name, original in zip(names, originals):
+            if original is None:
+                del os.environ[name]
+            else:
+                os.environ[name] = original
+
+
+def expand(value, extra_defs=None):
+    """Expand string variables in the config file"""
+    if value is None or isinstance(value, (int, float)):
+        return value
+    with override_env(extra_defs):
+        if isinstance(value, str):
+            return os.path.expandvars(value)
+        if isinstance(value, dict):
+            return {k: expand(v, None) for k, v in value.items()}
+        if isinstance(value, list):
+            return [expand(v, None) for v in value]
+        raise AssertionError(f"unhandled type: {type(value).__name__}")
 
 
 class StageConfig:
@@ -146,7 +188,7 @@ class MasterConfig(StageConfig):
         required = set()
         check_keys(allowed, required, config, type(self).__name__)
 
-        self.config_file = config.get("config_file", {})
+        self.config_file = expand(config.get("config_file", {}))
 
         check_list_of_dicts(
             config.get("pre", []), "CustomConfig.pre must be a list of dicts"
@@ -154,7 +196,9 @@ class MasterConfig(StageConfig):
         self.pre = config.get("pre", [])
         self.post = config.get("post", [{"conncheck": {"port": 8080}}])
 
-        self.binary = read_path(config.get("binary", "master/build/determined-master"))
+        self.binary = expand(
+            read_path(config.get("binary", "master/build/determined-master"))
+        )
 
         self.name = config.get("name", "master")
         self.temp_dir = temp_dir
@@ -189,9 +233,11 @@ class AgentConfig(StageConfig):
         required = set()
         check_keys(allowed, required, config, type(self).__name__)
 
-        self.binary = read_path(config.get("binary", "agent/build/determined-agent"))
+        self.binary = expand(
+            read_path(config.get("binary", "agent/build/determined-agent"))
+        )
 
-        self.config_file = config.get("config_file", {})
+        self.config_file = expand(config.get("config_file", {}))
 
         check_list_of_dicts(
             config.get("pre", []), "CustomConfig.pre must be a list of dicts"
@@ -224,8 +270,8 @@ class ConnCheckConfig:
         required = {"port"}
         check_keys(allowed, required, config, type(self).__name__)
 
-        self.host = config.get("host", "localhost")
-        self.port = config["port"]
+        self.host = expand(config.get("host", "localhost"))
+        self.port = expand(config["port"])
 
     def build_atomic(self, poll, logger, stream, report_fd):
         return dc.ConnCheck(self.host, self.port, report_fd)
@@ -238,7 +284,7 @@ class LogCheckConfig:
         check_keys(allowed, required, config, type(self).__name__)
 
         self.regex = config["regex"]
-        self.stream = config.get("stream")
+        self.stream = expand(config.get("stream"))
 
         # confirm that the regex is compilable
         re.compile(dc.asbytes(self.regex))
@@ -252,7 +298,7 @@ class LogCheckConfig:
 class CustomAtomicConfig:
     def __init__(self, config):
         check_list_of_strings(config, "AtomicConfig.custom must be a list of strings")
-        self.cmd = config
+        self.cmd = expand(config)
 
     def build_atomic(self, poll, logger, stream, report_fd):
         return dc.AtomicSubprocess(poll, logger, stream, report_fd, self.cmd)
@@ -274,10 +320,10 @@ class CustomConfig(StageConfig):
 
         check_keys(allowed, required, config, type(self).__name__)
 
-        self.cmd = config["cmd"]
+        self.cmd = expand(config["cmd"])
         check_list_of_strings(self.cmd, "CustomConfig.cmd must be a list of strings")
 
-        self.name = config["name"]
+        self.name = expand(config["name"])
         assert isinstance(self.name, str), "CustomConfig.name must be a string"
 
         check_list_of_dicts(
@@ -301,14 +347,14 @@ class CustomDockerConfig(StageConfig):
 
         check_keys(allowed, required, config, type(self).__name__)
 
-        self.container_name = config["container_name"]
+        self.container_name = expand(config["container_name"])
 
-        self.run_args = config["run_args"]
+        self.run_args = expand(config["run_args"])
         check_list_of_strings(
             self.run_args, "CustomConfig.run_args must be a list of strings"
         )
 
-        self.name = config["name"]
+        self.name = expand(config["name"])
         assert isinstance(self.name, str), "CustomConfig.name must be a string"
 
         check_list_of_dicts(
@@ -331,10 +377,10 @@ class Config:
         required = {"stages"}
         check_keys(allowed, required, config, type(self).__name__)
 
-        self.temp_dir = config.get("temp_dir", "/tmp/devcluster")
+        self.temp_dir = expand(config.get("temp_dir", "/tmp/devcluster"))
 
         check_list_of_dicts(config["stages"], "stages must be a list of dicts")
         self.stages = [
             StageConfig.read(stage, self.temp_dir) for stage in config["stages"]
         ]
-        self.startup_input = config.get("startup_input", "")
+        self.startup_input = expand(config.get("startup_input", ""))
