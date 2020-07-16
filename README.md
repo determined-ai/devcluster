@@ -1,6 +1,6 @@
 # `devcluster`
 
-A developer tool for running the Determined cluster.  Definitely still a WIP.
+A developer tool for running the Determined cluster.
 
 ## Configuring
 
@@ -53,8 +53,8 @@ not affect the server.
 ## Philosophy
 
 `devcluster` tries as much as possible to be a standalone tool for running
-arbitrary versions of the Determined cluster.  Currently it is only tested as
-far back as v0.12.3.
+arbitrary versions of the Determined cluster.  It is tested as far back as
+v0.12.3.
 
 Some defaults are kept up-to-date with tip-of-master to simplify the config
 file for the most-common use case, but in general preference was given to being
@@ -62,6 +62,5 @@ configurable and explicit.
 
 ## TODO
 
-- make log view scrollable
 - support docker volumes
 - config file reloading
