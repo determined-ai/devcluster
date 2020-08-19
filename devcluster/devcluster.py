@@ -82,6 +82,11 @@ class Poll:
             handler(ev)
 
 
+def separate_lines(msg):
+    lines = msg.split(b"\n")
+    return [l + b"\n" for l in lines[:-1]] + ([lines[-1]] if lines[-1] else [])
+
+
 class Logger:
     def __init__(self, streams, log_dir, init_streams=None, init_index=None):
         all_streams = ["console"] + streams
@@ -107,14 +112,20 @@ class Logger:
 
         now = time.time()
         msg = dc.asbytes(msg)
-        self.streams[stream].append((now, msg))
+
+        # Split the message along embedded line breaks, to improve scrolling granularity.
+        # They will all have the same timestamp, but python sorting is stable so that is OK.
+        lines = separate_lines(msg)
 
         if self.log_dir is not None:
             with open(os.path.join(self.log_dir, stream + ".log"), "ab") as f:
                 f.write(msg)
 
-        for cb in self.callbacks:
-            cb(msg, stream)
+        for line in lines:
+            self.streams[stream].append((now, line))
+
+            for cb in self.callbacks:
+                cb(line, stream)
 
     def add_callback(self, cb):
         self.callbacks.append(cb)
@@ -344,13 +355,10 @@ class Console:
         self.print_bar()
 
     def redraw(self):
-        # assume at least 1 in 2 log packets has a newline (we just need to fill up a screen)
-        tail_len = get_cols() * 2 + self.scroll
-
         # build new log output
         new_logs = []
         for stream in self.active_streams:
-            new_logs.extend(self.logger.streams[stream][-tail_len:])
+            new_logs.extend(self.logger.streams[stream])
         # sort the streams chronologically
         new_logs.sort(key=lambda x: x[0])
 
@@ -360,8 +368,14 @@ class Console:
         # don't render logs that we've scrolled past
         new_logs = new_logs[: len(new_logs) - self.scroll]
 
+        # assume at least 1 in 2 log packets has a newline (we just need to fill up a screen)
+        tail_len = get_cols() * 2
+        new_logs = new_logs[-tail_len:]
+
         prebar_bytes = self.erase_screen() + self.place_cursor(3, 1)
         prebar_bytes += b"".join(x[1] for x in new_logs)
+        if self.scroll:
+            prebar_bytes += fore_num(3) + b"(scrolling, 'x' to return to bottom)" + res
         self.print_bar(prebar_bytes)
 
     def handle_window_change(self):
@@ -459,6 +473,10 @@ class Console:
         elif key == "D":
             self.scroll = max(0, self.scroll - 10)
             self.redraw()
+        elif key == "x":
+            if self.scroll:
+                self.scroll = 0
+                self.redraw()
 
     def handle_stdin(self, ev):
         if ev & Poll.IN_FLAGS:

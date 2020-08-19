@@ -32,8 +32,9 @@ You can either specify a config file via the `--config` or `-c` option, or
 - `q` or `ctrl`+`c` once to quit, or twice to force-quit (which may leave
   dangling docker containers laying around)
 - `u`/`d` will scroll up/down, and `U`/`D` will scroll up/down faster
-  Scrolling support is rudimentary and not line-aware; it will scroll by
+  Scrolling support is only partially line-aware; it will scroll by
   literal log chunks, which may each be more or less than a line
+- `x` will reset scrolling to continue following logs
 
 ## Server/Client Mode
 
