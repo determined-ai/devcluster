@@ -35,6 +35,7 @@ You can either specify a config file via the `--config` or `-c` option, or
   Scrolling support is only partially line-aware; it will scroll by
   literal log chunks, which may each be more or less than a line
 - `x` will reset scrolling to continue following logs
+- Spacebar will emit a visual separator with a timestamp to the console stream.
 
 ## Server/Client Mode
 

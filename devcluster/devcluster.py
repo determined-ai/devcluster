@@ -339,6 +339,9 @@ class Console:
         # TODO: do scroll by lines instead of by log chunks (which can be more or less than a line)
         self.scroll = 0
 
+        # Cycle through marker colors.
+        self.marker_color = 0
+
     def start(self):
         self.redraw()
 
@@ -477,6 +480,14 @@ class Console:
             if self.scroll:
                 self.scroll = 0
                 self.redraw()
+
+        # visual marker
+        elif key == " ":
+            t = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+            marker = f"-- {time.time()} -- {t} --------------\n"
+            color = (self.marker_color + 3) % 5 + 10
+            self.marker_color += 1
+            self.logger.log(fore_num(color) + dc.asbytes(marker) + res)
 
     def handle_stdin(self, ev):
         if ev & Poll.IN_FLAGS:
