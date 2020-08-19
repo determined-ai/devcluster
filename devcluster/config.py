@@ -33,13 +33,6 @@ def read_path(path):
     return os.path.expanduser(path)
 
 
-def read_vars(s):
-    """Read environment variables in the string."""
-    if s is None:
-        return None
-    return os.path.expandvars(path)
-
-
 @contextlib.contextmanager
 def override_env(extra_defs=None):
     """Set some environment variables which will be cleaned up."""
