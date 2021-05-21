@@ -134,9 +134,77 @@ class Logger:
         self.callbacks.remove(cb)
 
 
-class StateMachine:
-    def __init__(self, logger, poll):
+class Command:
+    def __init__(self, command, logger, poll, end_cb):
+        self.command = command
+        self.cmd_str = dc.asbytes(
+            command if isinstance(command, str) else subprocess.list2cmdline(command)
+        )
         self.logger = logger
+        self.poll = poll
+        self.end_cb = end_cb
+        self.logger.log(fore_num(3) + dc.asbytes(f"starting `{self.cmd_str}`\n") + res)
+        self.start = time.time()
+        self.p = subprocess.Popen(
+            command,
+            shell=isinstance(command, str),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.out = self.p.stdout.fileno()
+        self.err = self.p.stderr.fileno()
+        self.poll.register(self.out, Poll.IN_FLAGS, self._handle_out)
+        self.poll.register(self.err, Poll.IN_FLAGS, self._handle_err)
+
+        self.killing = False
+
+    def _handle_out(self, ev):
+        if ev & dc.Poll.IN_FLAGS:
+            self.logger.log(os.read(self.out, 4096))
+        if ev & dc.Poll.ERR_FLAGS:
+            self.poll.unregister(self._handle_out)
+            os.close(self.out)
+            self.out = None
+            self._maybe_wait()
+
+    def _handle_err(self, ev):
+        if ev & dc.Poll.IN_FLAGS:
+            self.logger.log(os.read(self.err, 4096))
+        if ev & dc.Poll.ERR_FLAGS:
+            self.poll.unregister(self._handle_err)
+            os.close(self.err)
+            self.err = None
+            self._maybe_wait()
+
+    def cancel(self):
+        self.logger.log(fore_num(3) + b"killing %s...\n" % self.cmd_str + res)
+        self.killing = True
+        self.p.kill()
+
+    def _maybe_wait(self):
+        """wait() on self.p if both stdout and stderr are empty."""
+        if self.out is not None or self.err is not None:
+            return
+        ret = self.p.wait()
+        duration = time.time() - self.start
+        if self.killing:
+            msg = b"`%s` killed after %.2fs\n" % (self.cmd_str, duration)
+            self.logger.log(fore_num(3) + msg + res)
+        elif ret == 0:
+            msg = b"`%s` complete (%.2fs)\n" % (self.cmd_str, duration)
+            self.logger.log(fore_num(3) + msg + res)
+        else:
+            msg = b"`%s` failed with %d (%.2fs)\n" % (self.cmd_str, ret, duration)
+            self.logger.log(fore_num(1) + msg + res)
+        self.end_cb(self)
+
+
+class StateMachine:
+    def __init__(self, logger, poll, command_configs):
+        self.logger = logger
+        self.poll = poll
+        self.command_configs = command_configs
 
         self.quitting = False
 
@@ -159,6 +227,38 @@ class StateMachine:
         self.callbacks = []
 
         self.report_callbacks = {}
+
+        # commands maps the UI key to the command
+        self.commands = {}
+
+    def run_command(self, key):
+        if key not in self.command_configs:
+            return
+        if self.quitting:
+            msg = "ignoring command while we are quitting\n"
+            self.logger.log(fore_num(3) + dc.asbytes(msg) + res)
+            return
+        if key in self.commands:
+            msg = f"command for key {key} is still running, please wait...\n"
+            self.logger.log(fore_num(3) + dc.asbytes(msg) + res)
+            return
+
+        try:
+            command = Command(
+                self.command_configs[key].command,
+                self.logger,
+                self.poll,
+                self.command_end,
+            )
+        except FileNotFoundError as e:
+            self.logger.log(fore_num(1) + dc.asbytes(str(e)) + res)
+        self.commands[key] = command
+
+    def command_end(self, command):
+        for key in self.commands:
+            if self.commands[key] == command:
+                del self.commands[key]
+                break
 
     def get_report_fd(self):
         return self.pipe_wr
@@ -265,6 +365,8 @@ class StateMachine:
         self.logger.log("quitting...\n")
         self.quitting = True
         self.set_target(0)
+        for command in self.commands.values():
+            command.cancel()
 
     def transition(self, new_state):
         """For when you arrive at a new state."""
@@ -296,7 +398,7 @@ class StateMachine:
             raise ValueError("pipe failed!")
 
     def should_run(self):
-        return not (self.quitting and self.state == 0)
+        return not (self.quitting and self.state == 0 and len(self.commands) == 0)
 
 
 def fore_rgb(rgb):
@@ -319,7 +421,7 @@ res = b"\x1b[m"
 
 
 class Console:
-    def __init__(self, logger, poll, stages, set_target_cb, quit_cb):
+    def __init__(self, logger, poll, stages, set_target_cb, run_command_cb, quit_cb):
         self.logger = logger
         self.logger.add_callback(self.log_cb)
 
@@ -328,6 +430,7 @@ class Console:
 
         self.stages = ["dead"] + stages
         self.set_target_cb = set_target_cb
+        self.run_command_cb = run_command_cb
         self.quit_cb = quit_cb
 
         self.status = ("state", "substate", "target")
@@ -488,6 +591,10 @@ class Console:
             color = (self.marker_color + 3) % 5 + 10
             self.marker_color += 1
             self.logger.log(fore_num(color) + dc.asbytes(marker) + res)
+
+        # customizable commands, although Console doesn't know what commands are valid.
+        else:
+            self.run_command_cb(key)
 
     def handle_stdin(self, ev):
         if ev & Poll.IN_FLAGS:

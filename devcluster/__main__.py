@@ -28,10 +28,15 @@ def standalone_main(config):
 
         logger = dc.Logger(stage_names, config.temp_dir)
 
-        state_machine = dc.StateMachine(logger, poll)
+        state_machine = dc.StateMachine(logger, poll, config.commands)
 
         console = dc.Console(
-            logger, poll, stage_names, state_machine.set_target, state_machine.quit
+            logger,
+            poll,
+            stage_names,
+            state_machine.set_target,
+            state_machine.run_command,
+            state_machine.quit,
         )
         state_machine.add_callback(console.state_cb)
 

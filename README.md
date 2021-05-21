@@ -36,6 +36,8 @@ You can either specify a config file via the `--config` or `-c` option, or
   literal log chunks, which may each be more or less than a line
 - `x` will reset scrolling to continue following logs
 - Spacebar will emit a visual separator with a timestamp to the console stream.
+- With the default configuration, the keys `h`, `w`, and `c` will trigger
+  building the harness, webui, and docs, respectively.
 
 ## Server/Client Mode
 

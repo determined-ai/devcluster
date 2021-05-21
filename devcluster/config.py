@@ -26,6 +26,12 @@ def check_list_of_dicts(l, msg):
         assert isinstance(s, dict), msg
 
 
+def check_dict_with_string_keys(d, msg):
+    assert isinstance(d, dict), msg
+    for k in d:
+        assert isinstance(k, str), msg
+
+
 def read_path(path):
     """Expand ~'s in a non-None path."""
     if path is None:
@@ -187,7 +193,10 @@ class MasterConfig(StageConfig):
             config.get("pre", []), "CustomConfig.pre must be a list of dicts"
         )
         self.pre = config.get("pre", [])
-        self.post = config.get("post", [{"conncheck": {"port": 8080}}])
+        self.post = config.get(
+            "post",
+            [{"logcheck": {"regex": "accepting incoming connections on port"}}],
+        )
 
         self.binary = expand(
             read_path(config.get("binary", "master/build/determined-master"))
@@ -364,9 +373,27 @@ class CustomDockerConfig(StageConfig):
         return dc.DockerProcess(self, poll, logger, state_machine)
 
 
+class CommandConfig:
+    def __init__(self, command):
+        self.command = command
+
+    @staticmethod
+    def read(config):
+        # allowable command configs:
+        # commands:
+        #   a: echo hello world
+        #   b: ["echo", "hello", "world"]
+
+        msg = "CommandConfig must be either a string or a list of strings"
+        assert isinstance(config, (str, list)), msg
+        if isinstance(config, list):
+            check_list_of_strings(config, msg)
+        return CommandConfig(config)
+
+
 class Config:
     def __init__(self, config):
-        allowed = {"stages", "startup_input", "temp_dir"}
+        allowed = {"stages", "commands", "startup_input", "temp_dir"}
         required = {"stages"}
         check_keys(allowed, required, config, type(self).__name__)
 
@@ -377,3 +404,7 @@ class Config:
             StageConfig.read(stage, self.temp_dir) for stage in config["stages"]
         ]
         self.startup_input = expand(config.get("startup_input", ""))
+
+        commands = config.get("commands", {})
+        check_dict_with_string_keys(commands, "commands must be a dict of strings")
+        self.commands = {k: CommandConfig.read(v) for k, v in commands.items()}

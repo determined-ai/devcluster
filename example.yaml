@@ -7,6 +7,13 @@
 # You might overwrite it if you wanted to run multiple concurrent clusters.
 # temp_dir: /tmp/devcluster
 
+# commands is where you can assign arbitrary commands to hotkeys.  They should
+# be commands that do not otherwise interfere with the state of the cluster.
+commands:
+  h: make -C harness build
+  w: make -C webui build
+  c: make -C docs build
+
 # stages is the configuration of the whole cluster.  Each stage must be
 # completed before moving to the next stage, so order matters.  This example
 # assumes that devcluster.py is responsible for the database, but if you wanted

@@ -67,7 +67,7 @@ class Server:
         self.logger = dc.Logger(self.stage_names, config.temp_dir)
         self.logger.add_callback(self.log_cb)
 
-        self.state_machine = dc.StateMachine(self.logger, self.poll)
+        self.state_machine = dc.StateMachine(self.logger, self.poll, config.cmds)
         self.state_machine.add_callback(self.state_machine_cb)
 
         for stage_config in config.stages:
@@ -128,6 +128,8 @@ class Server:
         for k, v in jmsg.items():
             if k == "set_target":
                 self.state_machine.set_target(v)
+            if k == "run_cmd":
+                self.state_machine.run_cmd(v)
             elif k == "quit":
                 self.state_machine.quit()
             else:
@@ -175,7 +177,12 @@ class Client:
             init["stages"], None, init["logger_streams"], init["logger_index"]
         )
         self.console = dc.Console(
-            self.logger, self.poll, init["stages"], self.set_target, self.quit
+            self.logger,
+            self.poll,
+            init["stages"],
+            self.set_target,
+            self.run_command,
+            self.quit,
         )
 
         self.server = Connection(
@@ -251,6 +258,9 @@ class Client:
 
     def set_target(self, idx):
         self.server.write({"set_target": idx})
+
+    def run_command(self, key):
+        self.server.write({"run_cmd": key})
 
     def quit(self):
         self.keep_going = False
