@@ -208,8 +208,8 @@ class DockerProcess(Process):
         if not success:
             self.logger.log(
                 "failed to start a docker container, possibly try:\n\n"
-                f"    docker kill {self.config.container_name} "
-                f"&& docker container rm {self.config.container_name}\n\n"
+                f"    docker kill {self.config.container_name}; "
+                f"docker container rm {self.config.container_name}\n\n"
             )
 
     def get_precommand(self):
