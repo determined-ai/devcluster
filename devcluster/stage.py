@@ -156,8 +156,12 @@ class Process(Stage):
 
     def run_command(self):
         self.dying = False
+        env = dict(os.environ)
+        env.update(self.config.env)
         self.proc = subprocess.Popen(
             self.config.cmd,
+            env=env,
+            cwd=self.config.cwd,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

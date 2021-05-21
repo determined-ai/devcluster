@@ -317,7 +317,7 @@ class ShellAtomicConfig:
 
 class CustomConfig(StageConfig):
     def __init__(self, config):
-        allowed = {"cmd", "name", "pre", "post"}
+        allowed = {"cmd", "name", "env", "cwd", "pre", "post"}
         required = {"cmd", "name"}
 
         check_keys(allowed, required, config, type(self).__name__)
@@ -327,6 +327,21 @@ class CustomConfig(StageConfig):
 
         self.name = expand(config["name"])
         assert isinstance(self.name, str), "CustomConfig.name must be a string"
+
+        self.env = config.get("env", {})
+        check_dict_with_string_keys(
+            self.env, "CustomConfig.pre must be a list of dicts"
+        )
+
+        self.cwd = read_path(config.get("cwd"))
+        if self.cwd is not None:
+            assert isinstance(self.cwd, str), "CustomConfig.name must be a string"
+            assert os.path.exists(
+                self.cwd
+            ), f"cwd setting not valid, {self.cwd} does not exist"
+            assert os.path.isdir(
+                self.cwd
+            ), f"cwd setting not valid, {self.cwd} is not a directory"
 
         check_list_of_dicts(
             config.get("pre", []), "CustomConfig.pre must be a list of dicts"
