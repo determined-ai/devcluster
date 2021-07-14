@@ -133,7 +133,15 @@ class DBConfig(StageConfig):
     """DBConfig is a canned stage that runs the database in docker"""
 
     def __init__(self, config):
-        allowed = {"port", "password", "db_name", "data_dir", "container_name"}
+        allowed = {
+            "name",
+            "port",
+            "password",
+            "db_name",
+            "data_dir",
+            "container_name",
+            "image_name",
+        }
         required = set()
         check_keys(allowed, required, config, type(self).__name__)
 
@@ -142,7 +150,8 @@ class DBConfig(StageConfig):
         self.db_name = str(config.get("db_name", "determined"))
         self.container_name = str(config.get("container_name", "determined_db"))
         self.data_dir = read_path(config.get("data_dir"))
-        self.name = "db"
+        self.name = str(config.get("name", "db"))
+        self.image_name = str(config.get("image_name", "postgres:10.14"))
 
     def build_stage(self, poll, logger, state_machine):
 
@@ -158,7 +167,7 @@ class DBConfig(StageConfig):
             f"POSTGRES_DB={self.db_name}",
             "-e",
             f"POSTGRES_PASSWORD={self.password}",
-            "postgres:10.8",
+            self.image_name,
             "-N",
             "10000",
         ]

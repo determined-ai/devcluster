@@ -27,6 +27,7 @@ stages:
       # db_name: determined
       # password: postgres
       # container_name: determined_db
+      # image_name: "postgres:10.14"
 
       # data_dir is where the persistent files will be saved to.  If this key
       # is not present, the database will not persist at all.
