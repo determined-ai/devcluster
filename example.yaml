@@ -43,13 +43,13 @@ stages:
         - sh: make -C master build
         - sh: make -C tools prep-root
 
-      # post is the set of postcommands to run after starting the master.  You
-      # probably don't have to change these from the default unless you change
-      # the http_port for the master:
+      # binary: master/build/determined-master
+
+      # post is the set of postcommands to run after starting the master, before
+      # considering it "ready".  You probably never have to change this.
       # post:
-      #   - conn_check
-      #       host: localhost
-      #       port: 8080
+      #   - logcheck
+      #       regex: accepting incoming connections on port
 
       # config_file is the most important config detail for the master stage.
       # It is literally just master.yaml.
@@ -71,6 +71,11 @@ stages:
         root: tools/build
 
   - agent:
+      # If you have multiple agent stages, they should have different names.
+      # name: agent
+
+      # binary: master/build/determined-agent
+
       pre:
         - sh: make -C agent build
       config_file:
@@ -80,3 +85,89 @@ stages:
         # put your computer's hostname here.  host.docker.internal will not work.
         master_host: MY_IP_ADDR
         master_port: 8080
+
+        # This is a useful setting for testing single-node dtrain on a laptop.
+        # artificial_slots: 8
+
+
+# Example: Introduce a second, non-conflicting agent to test dtrain locally.
+# - agent:
+#     # Each agent stage should have a unique name for devcluster.
+#     name: agent2
+#     pre:
+#       - sh: make -C agent build
+#     config_file:
+#       master_host: MY_IP_ADDR
+#       master_port: 8080
+#       # Often dtrain clusters have multiple gpus per agent.
+#       artificial_slots: 8
+#       # Each agent needs a unique agent_id.
+#       agent_id: agent2
+#       # Each agent needs a deconflicting fluent container
+#       fluent:
+#         port: 24225  # default value is 24224
+#         container_name: determined-fluent-2
+
+
+# Example: a totally custom stage.  This one runs a static http server.
+# - custom:
+#     # name is required for custom stages
+#     name: http
+#     # cwd (optional), which dir to run the command from
+#     cwd: ~/http-files
+#     # cmd is a list of strings
+#     cmd: ["python", "-m", "http.server"]
+#     # env (optional), environment variables to set for this process
+#     # env:
+#     #   VARIABLE_NAME: variable_value
+#
+#     # pre (optional), actions to take before running the stage.  Allowable
+#     # entries are `sh` (a single string) or `custom` (a list of strings).
+#     # Each value will run in order and must exit 0 in order to proceed with
+#     # the stage.
+#     # pre:
+#     #   - sh: echo hello world
+#     #   - custom: ["echo", "hello", "world"]
+#
+#     # post (optional), actions to take after starting the stage but before
+#     # the stage is considered "ready".  The `sh` and `custom` types from
+#     # the `pre` config are allowed here, as well as two special entries:
+#     #  - logcheck: wait for a match to a regex pattern from process logs
+#     #  - conncheck: repeatedly try to connect to a port until it succeeds
+#     post:
+#       - conncheck:
+#           # port is required
+#           port: 8000
+#           # host defaults to "localhost"
+#           # host: localhost
+#       # You could use this logcheck instead of the above conncheck:
+#       # - logcheck:
+#       #     regex: 'Serving HTTP on .* port'
+#       #     # you can watch for logs on a different stage name, if needed
+#       #     # stream: http
+
+
+# Example: a totally custom stage in docker.  Another static http server.
+# - custom_docker:
+#     # name is required for custom_docker stages
+#     name: http_docker
+#     # container_name is required
+#     container_name: http_docker
+#     # run_args is a list of strings to `docker container run`
+#     run_args:
+#       # options for docker run
+#       - "-p"
+#       - "8001:8000"
+#       # image name
+#       - "python"
+#       # command + args
+#       - "python"
+#       - "-m"
+#       - "http.server"
+#     # kill_signal determines how we shut down the container.  Some containers
+#     # (like postgres) prefer TERM to KILL.
+#     # kill_signal: KILL
+#     # pre and post are configured identically.  They do not run in docker.
+#     post:
+#       - conncheck:
+#           port: 8001
