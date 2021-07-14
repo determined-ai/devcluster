@@ -176,6 +176,7 @@ class DBConfig(StageConfig):
             {
                 "name": "db",
                 "container_name": self.container_name,
+                "kill_signal": "TERM",
                 "run_args": run_args,
                 "post": [
                     {
@@ -317,7 +318,7 @@ class CustomAtomicConfig:
 
 class ShellAtomicConfig:
     def __init__(self, config):
-        assert isinstance(config, str), "AtomicConnfig.sh must be a single string"
+        assert isinstance(config, str), "AtomicConfig.sh must be a single string"
         self.cmd = ["sh", "-c", config]
 
     def build_atomic(self, poll, logger, stream, report_fd):
@@ -368,7 +369,7 @@ class CustomConfig(StageConfig):
 
 class CustomDockerConfig(StageConfig):
     def __init__(self, config):
-        allowed = {"name", "container_name", "run_args", "pre", "post"}
+        allowed = {"name", "container_name", "run_args", "kill_signal", "pre", "post"}
         required = {"name", "container_name", "run_args"}
 
         check_keys(allowed, required, config, type(self).__name__)
@@ -379,6 +380,11 @@ class CustomDockerConfig(StageConfig):
         check_list_of_strings(
             self.run_args, "CustomConfig.run_args must be a list of strings"
         )
+
+        self.kill_signal = config.get("kill_signal", "KILL")
+        assert isinstance(
+            self.kill_signal, str
+        ), "CustomConfig.kill_signal must be a string"
 
         self.name = expand(config["name"])
         assert isinstance(self.name, str), "CustomConfig.name must be a string"
