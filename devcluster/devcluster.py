@@ -231,28 +231,26 @@ class StateMachine:
         # commands maps the UI key to the command
         self.commands = {}
 
-    def run_command(self, key):
-        if key not in self.command_configs:
-            return
+    def run_command(self, cmd_str):
         if self.quitting:
             msg = "ignoring command while we are quitting\n"
             self.logger.log(fore_num(3) + dc.asbytes(msg) + res)
             return
-        if key in self.commands:
-            msg = f"command for key {key} is still running, please wait...\n"
+        if cmd_str in self.commands:
+            msg = f"command {cmd_str} is still running, please wait...\n"
             self.logger.log(fore_num(3) + dc.asbytes(msg) + res)
             return
 
         try:
             command = Command(
-                self.command_configs[key].command,
+                cmd_str,
                 self.logger,
                 self.poll,
                 self.command_end,
             )
         except FileNotFoundError as e:
             self.logger.log(fore_num(1) + dc.asbytes(str(e)) + res)
-        self.commands[key] = command
+        self.commands[cmd_str] = command
 
     def command_end(self, command):
         for key in self.commands:
@@ -421,7 +419,16 @@ res = b"\x1b[m"
 
 
 class Console:
-    def __init__(self, logger, poll, stages, set_target_cb, run_command_cb, quit_cb):
+    def __init__(
+        self,
+        logger,
+        poll,
+        stages,
+        set_target_cb,
+        command_configs,
+        run_command_cb,
+        quit_cb,
+    ):
         self.logger = logger
         self.logger.add_callback(self.log_cb)
 
@@ -430,6 +437,7 @@ class Console:
 
         self.stages = ["dead"] + stages
         self.set_target_cb = set_target_cb
+        self.command_configs = command_configs
         self.run_command_cb = run_command_cb
         self.quit_cb = quit_cb
 
@@ -516,14 +524,29 @@ class Console:
             return
         self.set_stream(idx, None)
 
-    def handle_key(self, key):
-        if key == "\x03":
-            self.quit_cb()
-        elif key == "q":
-            self.quit_cb()
+    def act_scroll(self, val):
+        self.scroll = max(0, self.scroll + val)
+        self.redraw()
 
+    def act_scroll_reset(self):
+        if self.scroll:
+            self.scroll = 0
+            self.redraw()
+
+    def act_marker(self):
+        t = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        marker = f"-- {time.time()} -- {t} --------------\n"
+        color = (self.marker_color + 3) % 5 + 10
+        self.marker_color += 1
+        self.logger.log(fore_num(color) + dc.asbytes(marker) + res)
+
+    def act_noop(self):
+        """Used to ignore a default keybinding."""
+        pass
+
+    def handle_key(self, key):
         # 0-9: set target state
-        elif key == "0" or key == "`":
+        if key == "0" or key == "`":
             self.try_set_target(0)
         elif key == "1":
             self.try_set_target(1)
@@ -566,35 +589,53 @@ class Console:
         elif key == "(":
             self.try_toggle_stream(9)
 
-        # scrolling
+        # customizable commands
+        elif key in self.command_configs:
+            cmdstr = self.command_configs[key].command
+            if not cmdstr.startswith(":"):
+                self.run_command_cb(cmdstr)
+            else:
+                # Console action.
+                if cmdstr == ":quit":
+                    self.quit_cb()
+                elif cmdstr == ":scroll-up":
+                    self.act_scroll(1)
+                elif cmdstr == ":scroll-up-10":
+                    self.act_scroll(10)
+                elif cmdstr == ":scroll-dn":
+                    self.act_scroll(-1)
+                elif cmdstr == ":scroll-dn-10":
+                    self.act_scroll(-10)
+                elif cmdstr == ":scroll-reset":
+                    self.act_scroll_reset()
+                elif cmdstr == ":marker":
+                    self.act_marker()
+                elif cmdstr == ":noop":
+                    self.act_noop()
+                else:
+                    self.logger.log(
+                        fore_num(9)
+                        + dc.asbytes(f'"{cmdstr}" is not a devcluster command\n')
+                        + res
+                    )
+
+        # Default keybindings
+        elif key == "\x03":
+            self.quit_cb()
+        elif key == "q":
+            self.quit_cb()
+        elif key == "k":
+            self.act_scroll(1)
         elif key == "u":
-            self.scroll += 1
-            self.redraw()
-        elif key == "U":
-            self.scroll += 10
-            self.redraw()
+            self.act_scroll(10)
+        elif key == "j":
+            self.act_scroll(-1)
         elif key == "d":
-            self.scroll = max(0, self.scroll - 1)
-            self.redraw()
-        elif key == "D":
-            self.scroll = max(0, self.scroll - 10)
-            self.redraw()
+            self.act_scroll(-10)
         elif key == "x":
-            if self.scroll:
-                self.scroll = 0
-                self.redraw()
-
-        # visual marker
+            self.act_scroll_reset()
         elif key == " ":
-            t = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-            marker = f"-- {time.time()} -- {t} --------------\n"
-            color = (self.marker_color + 3) % 5 + 10
-            self.marker_color += 1
-            self.logger.log(fore_num(color) + dc.asbytes(marker) + res)
-
-        # customizable commands, although Console doesn't know what commands are valid.
-        else:
-            self.run_command_cb(key)
+            self.act_marker()
 
     def handle_stdin(self, ev):
         if ev & Poll.IN_FLAGS:
@@ -622,13 +663,18 @@ class Console:
         bar1 = b"state: "
         # printable length
         bar1_len = len(bar1)
-        for i, stage in enumerate(self.stages):
-            # Active stage is orange
-            if stage.lower() == state.lower():
-                color = orange
-            else:
-                color = blue
 
+        # Decide on colors.
+        if state.lower() == "dead":
+            colors = [orange] + [blue] * (len(self.stages) - 1)
+        else:
+            colors = [blue] * len(self.stages)
+            for i in range(1, len(self.stages)):
+                colors[i] = orange
+                if self.stages[i].lower() == state.lower():
+                    break
+
+        for i, (stage, color) in enumerate(zip(self.stages, colors)):
             # Target stage is donoted with <
             if stage.lower() == target.lower():
                 post = b"< "

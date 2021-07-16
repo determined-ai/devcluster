@@ -77,6 +77,8 @@ class Server:
 
         self.clients = set()
 
+        self.command_config = config.commands
+
         # Write a traceback to stdout on SIGUSR1 (10)
         def _traceback_signal(signum, frame):
             traceback.print_stack(frame)
@@ -118,6 +120,7 @@ class Server:
                 "logger_streams": self.logger.streams,
                 "logger_index": self.logger.index,
                 "first_state": self.state_machine.gen_state_cb(),
+                "command_configs": self.command_config,
             }
             client.write({"init": base64.b64encode(pickle.dumps(init)).decode("utf8")})
 
@@ -181,6 +184,7 @@ class Client:
             self.poll,
             init["stages"],
             self.set_target,
+            init["command_configs"],
             self.run_command,
             self.quit,
         )
@@ -259,8 +263,8 @@ class Client:
     def set_target(self, idx):
         self.server.write({"set_target": idx})
 
-    def run_command(self, key):
-        self.server.write({"run_cmd": key})
+    def run_command(self, cmdstr):
+        self.server.write({"run_cmd": cmdstr})
 
     def quit(self):
         self.keep_going = False

@@ -38,6 +38,7 @@ def standalone_main(config):
             poll,
             stage_names,
             state_machine.set_target,
+            config.commands,
             state_machine.run_command,
             state_machine.quit,
         )
