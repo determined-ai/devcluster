@@ -6,8 +6,11 @@ import fcntl
 import os
 import traceback
 import signal
+import subprocess
+import re
 import sys
 import yaml
+from typing import Optional, Sequence
 
 import devcluster as dc
 
@@ -135,10 +138,34 @@ def lockfile(filename):
             fcntl.flock(f, fcntl.LOCK_UN)
 
 
+def get_host_addr_for_docker() -> Optional[str]:
+    if "darwin" in sys.platform:
+        # On macOS, docker runs in a VM and host.docker.internal points to the IP
+        # address of this VM.
+        return "host.docker.internal"
+
+    # On non-macOS, host.docker.internal does not exist. Instead, grab the source IP
+    # address we would use if we had to talk to the internet. The sed command
+    # searches the first line of its input for "src" and prints the first field
+    # after that.
+    proxy_addr_args = ["ip", "route", "get", "8.8.8.8"]
+    pattern = r"s|.* src +(\S+).*|\1|"
+    s = subprocess.check_output(proxy_addr_args, encoding="utf-8")
+    matches = re.match(pattern, s)
+    if matches is not None:
+        groups: Sequence[str] = matches.groups()
+        if len(groups) != 0:
+            return groups[0]
+
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-c", "--config", dest="config", action="store")
     parser.add_argument("-1", "--oneshot", dest="oneshot", action="store_true")
+    parser.add_argument("-C", "--cwd", dest="cwd", action="store")
+    parser.add_argument("--no-guess-host", dest="no_guess_host", action="store_true")
     parser.add_argument(
         "-p", "--port", dest="port", action="store", type=int, default=None
     )
@@ -163,10 +190,9 @@ def main():
         print("--oneshot is only supported in server mode", file=sys.stderr)
         sys.exit(1)
 
-    # Read config before the chdir()
+    # Read config before the cwd.
     if args.config is not None:
-        with open(args.config) as f:
-            config = dc.Config(yaml.safe_load(f.read()))
+        config_path = args.config
     else:
         check_paths = []
         if "HOME" in os.environ:
@@ -177,9 +203,8 @@ def main():
             )
         for path in check_paths:
             if os.path.exists(path):
-                with open(path) as f:
-                    config = dc.Config(yaml.safe_load(f.read()))
-                    break
+                config_path = path
+                break
         else:
             print(
                 "you must either specify --config or use the file",
@@ -188,10 +213,45 @@ def main():
             )
             sys.exit(1)
 
-    if "DET_PROJ" not in os.environ:
-        print("you must specify the DET_PROJ environment variable", file=sys.stderr)
-        sys.exit(1)
-    os.chdir(os.environ["DET_PROJ"])
+    env = dict(os.environ)
+
+    if "DOCKER_LOCALHOST" in env or not args.no_guess_host:
+        docker_localhost = get_host_addr_for_docker()
+        if docker_localhost is None:
+            print(
+                "Unable to guess the value for $DOCKER_LOCALHOST.\n"
+                "If you do not need $DOCKER_LOCALHOST in your devcluster config\n"
+                "you can disable the check by passing --no-guess-host or by\n"
+                "setting the DOCKER_LOCALHOST environment variable yourself.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        env["DOCKER_LOCALHOST"] = get_host_addr_for_docker()
+
+    with open(config_path) as f:
+        config = dc.Config(dc.expand_env(yaml.safe_load(f.read()), env))
+
+    # Process cwd.
+    cwd_path = None
+    if args.cwd is not None:
+        cwd_source = "--cwd"
+        cwd_path = args.cwd
+    elif config.cwd is not None:
+        cwd_source = "config.cwd"
+        cwd_path = config.cwd
+    elif "DET_PROJ" in os.environ:
+        # Legacy setup, from when -C/--cwd wasn't an option.
+        cwd_source = "$DET_PROJ"
+        cwd_path = os.environ["DET_PROJ"]
+
+    if cwd_path is not None:
+        if not os.path.exists(cwd_path):
+            print(f"{cwd_source}: {cwd_path} does not exist!", file=sys.stderr)
+            sys.exit(1)
+        if not os.path.isdir(cwd_path):
+            print(f"{cwd_source}: {cwd_path} is not a directory!", file=sys.stderr)
+            sys.exit(1)
+        os.chdir(cwd_path)
 
     if args.mode == "standalone":
         os.makedirs(config.temp_dir, exist_ok=True)

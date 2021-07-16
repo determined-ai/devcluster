@@ -1,4 +1,4 @@
-from devcluster.config import Config
+from devcluster.config import Config, expand_env
 from devcluster.devcluster import (
     Poll,
     Logger,
