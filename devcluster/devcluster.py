@@ -453,6 +453,8 @@ class Console:
         # Cycle through marker colors.
         self.marker_color = 0
 
+        self.last_bar_state = None
+
     def start(self):
         self.redraw()
 
@@ -486,10 +488,18 @@ class Console:
         tail_len = get_cols() * 2
         new_logs = new_logs[-tail_len:]
 
-        prebar_bytes = self.erase_screen() + self.place_cursor(3, 1)
-        prebar_bytes += b"".join(x[1] for x in new_logs)
-        if self.scroll:
-            prebar_bytes += fore_num(3) + b"(scrolling, 'x' to return to bottom)" + res
+        if dc.has_csr():
+            # Redraw the whole screen.
+            self.last_bar_state = None
+            prebar_bytes = self.erase_screen() + self.place_cursor(3, 1)
+            prebar_bytes += b"".join(x[1] for x in new_logs)
+            if self.scroll:
+                prebar_bytes += (
+                    fore_num(3) + b"(scrolling, 'x' to return to bottom)" + res
+                )
+        else:
+            # Just redraw the logs.
+            prebar_bytes = b"...\n" + b"".join(x[1] for x in new_logs)
         self.print_bar(prebar_bytes)
 
     def handle_window_change(self):
@@ -656,6 +666,14 @@ class Console:
     def print_bar(self, prebar_bytes=b""):
         cols = get_cols()
         state, _, target = self.status
+
+        # When change_scroll_region is available, we only write the bar when we have to modify it.
+        new_bar_state = (get_cols(), state, target, self.active_streams)
+        if dc.has_csr() and self.last_bar_state == new_bar_state:
+            if prebar_bytes:
+                os.write(sys.stdout.fileno(), prebar_bytes)
+            return
+        self.last_bar_state = new_bar_state
 
         blue = fore_num(202) + back_num(17)
         orange = fore_num(17) + back_num(202)

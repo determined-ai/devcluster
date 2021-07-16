@@ -19,4 +19,4 @@ from devcluster.atomic import (
     AtomicSubprocess,
     DockerRunAtomic,
 )
-from devcluster.util import nonblock, asbytes, terminal_config
+from devcluster.util import nonblock, asbytes, terminal_config, has_csr

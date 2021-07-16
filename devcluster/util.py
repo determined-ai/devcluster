@@ -2,6 +2,7 @@ import contextlib
 import fcntl
 import os
 import termios
+import subprocess
 import sys
 
 
@@ -14,6 +15,24 @@ def asbytes(msg):
 def nonblock(fd):
     flags = fcntl.fcntl(fd, fcntl.F_GETFL)
     fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK | os.O_CLOEXEC)
+
+
+_has_csr = None
+
+
+def has_csr():
+    global _has_csr
+    if _has_csr is None:
+        try:
+            p = subprocess.run(
+                ["infocmp"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+            )
+            p.check_returncode()
+            # We only handle one form of change_scroll_region.
+            _has_csr = b"csr=\\E[%i%p1%d;%p2%dr," in p.stdout
+        except Exception:
+            _has_csr = False
+    return _has_csr
 
 
 @contextlib.contextmanager
@@ -44,10 +63,16 @@ def terminal_config():
     try:
         # enable alternate screen buffer
         os.write(sys.stdout.fileno(), b"\x1b[?1049h")
+        if has_csr():
+            # set scrolling region to not include status bar:
+            os.write(sys.stdout.fileno(), b"\x1b[3;0r")
         # make the terminal raw
         termios.tcsetattr(fd, termios.TCSADRAIN, new)
         yield
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        if has_csr():
+            # reset scrolling region:
+            os.write(sys.stdout.fileno(), b"\x1b[0;0r")
         # disable alternate screen buffer
         os.write(sys.stdout.fileno(), b"\x1b[?1049l")
