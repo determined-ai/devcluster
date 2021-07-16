@@ -30,5 +30,6 @@ stages:
         - sh: make -C agent build
       binary: agent/build/determined-agent
       config_file:
-        master_host: MY_IP_ADDR
+        master_host: 127.0.0.1
         master_port: 8080
+        container_master_host: $DOCKER_LOCALHOST

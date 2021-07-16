@@ -55,5 +55,7 @@ stages:
         - sh: make -C agent install-native
       binary: ~/go/bin/determined-agent
       config_file:
+        # In 0.12.3, container_master_host was not available, so you should use
+        # your computer's external IP address here.
         master_host: MY_IP_ADDR
         master_port: 8080
