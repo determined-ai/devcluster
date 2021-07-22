@@ -504,6 +504,9 @@ class Console:
         """This should get called some time after a SIGWINCH."""
         _ = get_cols(True)
         _ = get_rows(True)
+        if dc.has_csr():
+            # Scrolling region has to be reconfigured.
+            os.write(sys.stdout.fileno(), b"\x1b[3r")
         self.redraw()
 
     def set_stream(self, stream, val):
