@@ -65,7 +65,7 @@ def terminal_config():
         os.write(sys.stdout.fileno(), b"\x1b[?1049h")
         if has_csr():
             # set scrolling region to not include status bar:
-            os.write(sys.stdout.fileno(), b"\x1b[3;0r")
+            os.write(sys.stdout.fileno(), b"\x1b[3r")
         # make the terminal raw
         termios.tcsetattr(fd, termios.TCSADRAIN, new)
         yield
@@ -73,6 +73,6 @@ def terminal_config():
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
         if has_csr():
             # reset scrolling region:
-            os.write(sys.stdout.fileno(), b"\x1b[0;0r")
+            os.write(sys.stdout.fileno(), b"\x1b[r")
         # disable alternate screen buffer
         os.write(sys.stdout.fileno(), b"\x1b[?1049l")
