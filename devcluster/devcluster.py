@@ -488,18 +488,16 @@ class Console:
         tail_len = get_cols() * 2
         new_logs = new_logs[-tail_len:]
 
-        if dc.has_csr():
-            # Redraw the whole screen.
-            self.last_bar_state = None
-            prebar_bytes = self.erase_screen() + self.place_cursor(3, 1)
-            prebar_bytes += b"".join(x[1] for x in new_logs)
-            if self.scroll:
-                prebar_bytes += (
-                    fore_num(3) + b"(scrolling, 'x' to return to bottom)" + res
-                )
-        else:
-            # Just redraw the logs.
-            prebar_bytes = b"...\n" + b"".join(x[1] for x in new_logs)
+        # Empty the logs with newlines because it reduces flicker, especially for has_csr()
+        prebar_bytes = (
+            b"\n" * (get_rows() - 2)
+            + self.place_cursor(3, 1)
+            + b"".join(x[1] for x in new_logs)
+        )
+
+        if self.scroll:
+            prebar_bytes += fore_num(3) + b"(scrolling, 'x' to return to bottom)" + res
+
         self.print_bar(prebar_bytes)
 
     def handle_window_change(self):
@@ -663,6 +661,9 @@ class Console:
     def erase_screen(self):
         return b"\x1b[2J"
 
+    def erase_after(self):
+        return b"\x1b[J"
+
     def print_bar(self, prebar_bytes=b""):
         cols = get_cols()
         state, _, target = self.status
@@ -754,7 +755,6 @@ class Console:
                     prebar_bytes,
                     save_cursor(),
                     self.place_cursor(1, 1),
-                    self.erase_line(),
                     bar_bytes,
                     restore_cursor(),
                 ]
