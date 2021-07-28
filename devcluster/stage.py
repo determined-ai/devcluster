@@ -110,7 +110,7 @@ class Process(Stage):
             self.reset()
             self.state_machine.next_thing()
 
-    def _handle_out(self, ev):
+    def _handle_out(self, ev, _):
         if ev & dc.Poll.IN_FLAGS:
             self.logger.log(os.read(self.out, 4096), self.log_name())
         if ev & dc.Poll.ERR_FLAGS:
@@ -119,7 +119,7 @@ class Process(Stage):
             self.out = None
             self._maybe_wait()
 
-    def _handle_err(self, ev):
+    def _handle_err(self, ev, _):
         if ev & dc.Poll.IN_FLAGS:
             self.logger.log(os.read(self.err, 4096), self.log_name())
         if ev & dc.Poll.ERR_FLAGS:

@@ -75,18 +75,45 @@ corresponding keys.
 
 ## Server/Client Mode
 
-You can run `devcluster` as a headless server:
+You can run `devcluster` as a headless server with various configurations for
+listening for clients:
 
-    python -m devcluster server --port 1234
+    # listen on 0.0.0.0:1234
+    devcluster --quiet --listen 1234
 
-Sending a `SIGINT` (via `ctrl`+`c`) or a `SIGTERM` (via `kill`) will close it.
+    # listen on localhost:1234
+    devcluster -q -l 127.0.0.1:1234
 
-You can also connect the UI to a headless server:
+    # listen on a unix socket
+    devcluster -q -l /path/to/socket
 
-    python -m devcluster client --port 1234
+    # listen on the default unix socket (/tmp/devcluster/sock)
+    devcluster -q
 
-In `client` mode, pressing `q` or `ctrl`+`c` will only close the UI; it will
-not affect the server.
+    # configure multiple listeners
+    devcluster -q -l 1234 /path/to/socket
+
+Sending a `SIGINT` (via `ctrl`+`c`) or a `SIGTERM` (via `kill`) to the headless
+server will close it.
+
+You can then connect the UI to a headless server:
+
+    devcluster 1234
+    devcluster host:1234
+    devcluster /path/to/socket
+
+In client mode, pressing `q` or `ctrl`+`c` will only close the UI; it will not
+affect the server.
+
+## Oneshot Mode
+
+You can run `devcluster` in a special oneshot mode (`-1`/`--oneshot`), suitable
+for automated usage.  In automated mode, the `stdout` from `devcluster` will be
+suitable for redirecting to a file, and the `stderr` will emit the line:
+
+    devcluster is up
+
+to indicate when the cluster is ready for use.
 
 ## Philosophy
 

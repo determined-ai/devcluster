@@ -79,7 +79,7 @@ class Poll:
         ready = self._poll.poll()
         for fd, ev in ready:
             handler = self.handlers[fd]
-            handler(ev)
+            handler(ev, fd)
 
 
 def separate_lines(msg):
@@ -159,7 +159,7 @@ class Command:
 
         self.killing = False
 
-    def _handle_out(self, ev):
+    def _handle_out(self, ev, _):
         if ev & dc.Poll.IN_FLAGS:
             self.logger.log(os.read(self.out, 4096))
         if ev & dc.Poll.ERR_FLAGS:
@@ -168,7 +168,7 @@ class Command:
             self.out = None
             self._maybe_wait()
 
-    def _handle_err(self, ev):
+    def _handle_err(self, ev, _):
         if ev & dc.Poll.IN_FLAGS:
             self.logger.log(os.read(self.err, 4096))
         if ev & dc.Poll.ERR_FLAGS:
@@ -372,7 +372,7 @@ class StateMachine:
 
         self.next_thing()
 
-    def handle_pipe(self, ev):
+    def handle_pipe(self, ev, _):
         if ev & Poll.IN_FLAGS:
             msg = os.read(self.pipe_rd, 4096).decode("utf8")
             for c in msg:
@@ -648,7 +648,7 @@ class Console:
         elif key == " ":
             self.act_marker()
 
-    def handle_stdin(self, ev):
+    def handle_stdin(self, ev, _):
         if ev & Poll.IN_FLAGS:
             key = sys.stdin.read(1)
             self.handle_key(key)

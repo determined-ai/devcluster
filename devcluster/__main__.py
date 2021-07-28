@@ -4,8 +4,6 @@ import argparse
 import contextlib
 import fcntl
 import os
-import traceback
-import signal
 import subprocess
 import re
 import sys
@@ -13,113 +11,6 @@ import yaml
 from typing import Optional, Sequence
 
 import devcluster as dc
-
-
-def standalone_main(config):
-    # Write a traceback to stdout on SIGUSR1 (10)
-    def _traceback_signal(signum, frame):
-        with open(os.path.join(config.temp_dir, "traceback"), "a") as f:
-            f.write("------\n")
-            traceback.print_stack(frame, file=f)
-
-    signal.signal(signal.SIGUSR1, _traceback_signal)
-
-    with dc.terminal_config():
-        poll = dc.Poll()
-
-        stage_names = [stage_config.name for stage_config in config.stages]
-
-        logger = dc.Logger(stage_names, config.temp_dir)
-
-        state_machine = dc.StateMachine(logger, poll, config.commands)
-
-        console = dc.Console(
-            logger,
-            poll,
-            stage_names,
-            state_machine.set_target,
-            config.commands,
-            state_machine.run_command,
-            state_machine.quit,
-        )
-        state_machine.add_callback(console.state_cb)
-
-        def _sigwinch_handler(signum, frame):
-            """Enqueue a call to _sigwinch_callback() via poll()."""
-            os.write(state_machine.get_report_fd(), b"W")
-
-        def _sigwinch_callback():
-            """Handle the SIGWINCH when it is safe"""
-            console.handle_window_change()
-
-        state_machine.add_report_callback("W", _sigwinch_callback)
-        signal.signal(signal.SIGWINCH, _sigwinch_handler)
-
-        for stage_config in config.stages:
-            state_machine.add_stage(
-                stage_config.build_stage(poll, logger, state_machine)
-            )
-
-        # Draw the screen ASAP
-        console.start()
-
-        state_machine.set_target(len(stage_names))
-
-        for c in config.startup_input:
-            console.handle_key(c)
-
-        while state_machine.should_run():
-            poll.poll()
-
-
-class Oneshot:
-    """
-    Watch the state to print a message when the final state is up and to quit if anything fails.
-    """
-
-    def __init__(self, quit_cb):
-        self.first_target = None
-        self.up = False
-        self.failing = False
-        self.quit_cb = quit_cb
-
-    def state_cb(self, state, substate, target):
-        if self.first_target is None:
-            self.first_target = target
-
-        # Did we reach the target stat?
-        if state == self.first_target and substate == "" and not self.up:
-            self.up = True
-            print("cluster is up")
-
-        # Is the cluster failing?
-        if target != self.first_target and not self.failing:
-            self.failing = True
-            print("cluster is failing")
-            self.quit_cb()
-
-
-def server_main(config, host, port, oneshot_mode):
-    server = dc.Server(config, host, port)
-
-    if oneshot_mode:
-
-        # In case of a signal state_machine.quit() may have been called, so we check try to detect
-        # if we need to call quit or not from the Oneshot.
-        def quit_cb():
-            if not server.state_machine.quitting:
-                server.state_machine.quit()
-
-        oneshot = Oneshot(quit_cb)
-        server.state_machine.add_callback(oneshot.state_cb)
-
-    server.run()
-
-
-def client_main(host, port):
-    client = dc.Client(host, port)
-    with dc.terminal_config():
-        client.run()
 
 
 @contextlib.contextmanager
@@ -165,30 +56,48 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-c", "--config", dest="config", action="store")
     parser.add_argument("-1", "--oneshot", dest="oneshot", action="store_true")
+    parser.add_argument("-q", "--quiet", dest="quiet", action="store_true")
     parser.add_argument("-C", "--cwd", dest="cwd", action="store")
     parser.add_argument("--no-guess-host", dest="no_guess_host", action="store_true")
-    parser.add_argument(
-        "-p", "--port", dest="port", action="store", type=int, default=None
-    )
-    parser.add_argument(
-        "mode",
-        nargs="?",
-        default="standalone",
-        choices=["standalone", "server", "client"],
-    )
+    parser.add_argument("-l", "--listen", dest="listen", action="store_true")
+    parser.add_argument("addr", nargs="*")
     args = parser.parse_args()
 
-    # Validate mode
-    if args.mode == "standalone" and args.port is not None:
-        print("--port is not allowed with standalone mode", file=sys.stderr)
-        sys.exit(1)
-    if args.mode != "standalone" and args.port is None:
-        print(f"--port is required with {args.mode} mode", file=sys.stderr)
-        sys.exit(1)
+    if args.listen or len(args.addr) == 0:
+        # --listen was set explicitly or no addresses were set for the client
+        mode = "server"
+    else:
+        mode = "client"
 
-    # Validate oneshot.
-    if args.oneshot and args.mode != "server":
-        print("--oneshot is only supported in server mode", file=sys.stderr)
+    # Validate args
+    ok = True
+    if mode == "client":
+        if len(args.addr) != 1:
+            print(
+                "in client mode, devcluster requires exactly one positional address argument",
+                file=sys.stderr,
+            )
+            ok = False
+        if args.oneshot:
+            print("--oneshot is not supported in client mode", file=sys.stderr)
+            ok = False
+        if args.quiet:
+            print("--quiet is not supported in client mode", file=sys.stderr)
+            ok = False
+        if args.no_guess_host:
+            print("--no-guess-host is not supported in client mode", file=sys.stderr)
+            ok = False
+        if args.config:
+            print("--config is not supported in client mode", file=sys.stderr)
+            ok = False
+    if mode == "server":
+        if args.oneshot and args.quiet:
+            print("--oneshot and --quiet don't make sense together", file=sys.stderr)
+            ok = False
+        if args.oneshot and args.addr:
+            print("--oneshot requires that no addresses are provided", file=sys.stderr)
+
+    if not ok:
         sys.exit(1)
 
     # Read config before the cwd.
@@ -221,8 +130,8 @@ def main():
         if docker_localhost is None:
             print(
                 "Unable to guess the value for $DOCKER_LOCALHOST.\n"
-                "If you do not need $DOCKER_LOCALHOST in your devcluster config\n"
-                "you can disable the check by passing --no-guess-host or by\n"
+                "If you do not need $DOCKER_LOCALHOST in your devcluster config.\n"
+                "You can disable the check by passing --no-guess-host or by\n"
                 "setting the DOCKER_LOCALHOST environment variable yourself.",
                 file=sys.stderr,
             )
@@ -254,16 +163,18 @@ def main():
             sys.exit(1)
         os.chdir(cwd_path)
 
-    if args.mode == "standalone":
+    if mode == "server":
         os.makedirs(config.temp_dir, exist_ok=True)
         with lockfile(os.path.join(config.temp_dir, "lock")):
-            standalone_main(config)
-    elif args.mode == "server":
-        os.makedirs(config.temp_dir, exist_ok=True)
-        with lockfile(os.path.join(config.temp_dir, "lock")):
-            server_main(config, "localhost", args.port, args.oneshot)
-    elif args.mode == "client":
-        client_main("localhost", args.port)
+            if not args.oneshot:
+                args.addr = [os.path.join(config.temp_dir, "sock")] + args.addr
+            server = dc.Server(
+                config, args.addr, quiet=args.quiet, oneshot=args.oneshot
+            )
+            server.run()
+    elif mode == "client":
+        client = dc.Client(args.addr[0])
+        client.run()
 
 
 if __name__ == "__main__":

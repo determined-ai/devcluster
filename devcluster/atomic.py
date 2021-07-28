@@ -173,7 +173,7 @@ class AtomicSubprocess(AtomicOperation):
 
             os.write(self.report_fd, b"S" if success else b"F")
 
-    def _handle_out(self, ev):
+    def _handle_out(self, ev, _):
         if ev & dc.Poll.IN_FLAGS:
             self.logger.log(os.read(self.out, 4096), self.stream)
         if ev & dc.Poll.ERR_FLAGS:
@@ -182,7 +182,7 @@ class AtomicSubprocess(AtomicOperation):
             self.out = None
             self._maybe_wait()
 
-    def _handle_err(self, ev):
+    def _handle_err(self, ev, _):
         if ev & dc.Poll.IN_FLAGS:
             self.logger.log(os.read(self.err, 4096), self.stream)
         if ev & dc.Poll.ERR_FLAGS:

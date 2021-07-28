@@ -1,12 +1,103 @@
 import base64
+import contextlib
 import json
 import os
 import pickle
 import traceback
 import signal
 import socket
+import sys
 
 import devcluster as dc
+
+
+def read_addr_spec(spec):
+    assert spec
+    addr = None
+    sock = None
+
+    if set(spec).issubset("0123456789"):
+        # plain port number
+        addr = ("", int(spec))
+    elif ":" in spec:
+        # host:port
+        temp = spec.split(":")
+        addr = (":".join(temp[:-1]), int(temp[-1]))
+    elif "/" in spec:
+        sock = spec
+    else:
+        raise ValueError(
+            f"address spec '{spec}' is neither a port number, nor host:port, nor a path"
+        )
+
+    return addr, sock
+
+
+def listener_from_spec(spec):
+    addr, sock = read_addr_spec(spec)
+    if addr is not None:
+        # TCP
+        l = socket.socket()
+        l.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        l.bind(addr)
+        l.listen()
+    else:
+        # Unix
+        l = socket.socket(family=socket.AF_UNIX)
+        if os.path.exists(sock):
+            os.remove(sock)
+        l.bind(sock)
+        l.listen()
+
+    return l
+
+
+def connection_from_spec(spec):
+    addr, sock = read_addr_spec(spec)
+    if addr is not None:
+        # TCP
+        c = socket.socket()
+        c.connect(addr)
+    else:
+        # Unix
+        c = socket.socket(family=socket.AF_UNIX)
+        c.connect(sock)
+
+    return c
+
+
+class OneshotCB:
+    """
+    Watch the state to print a message when the final state is up and to quit if anything fails.
+    """
+
+    def __init__(self, quit_cb):
+        self.first_target = None
+        self.up = False
+        self.failing = False
+        self.quit_cb = quit_cb
+
+    def state_cb(self, state, substate, target):
+        if self.first_target is None:
+            self.first_target = target
+
+        # Did we reach the target stat?
+        if state == self.first_target and substate == "" and not self.up:
+            self.up = True
+            os.write(sys.stderr.fileno(), b"devcluster is up\n")
+
+        # Is the cluster failing?
+        if target != self.first_target and not self.failing:
+            self.failing = True
+            os.write(sys.stderr.fileno(), b"devcluster is failing\n")
+            self.quit_cb()
+
+    def log_cb(self, msg, stream):
+        lines = msg.split(b"\n")
+        if lines and lines[-1] == b"":
+            lines = lines[:-1]
+        for line in lines:
+            os.write(sys.stdout.fileno(), dc.asbytes(stream) + b": " + line + b"\n")
 
 
 class Connection:
@@ -24,7 +115,7 @@ class Connection:
         stuff = json.dumps(jmsg).encode("utf8") + b"\n"
         self.sock.send(stuff)
 
-    def handle_sock(self, ev):
+    def handle_sock(self, ev, _):
         if ev & dc.Poll.IN_FLAGS:
             try:
                 new_bytes = self.sock.recv(4096)
@@ -51,16 +142,17 @@ class Connection:
 
 
 class Server:
-    def __init__(self, config, bindhost, bindport):
+    def __init__(self, config, listeners, quiet=False, oneshot=False):
+        self.config = config
         self.poll = dc.Poll()
 
-        self.listener = socket.socket()
-        self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.listener.bind((bindhost, bindport))
-        self.listener.listen()
-        self.poll.register(
-            self.listener.fileno(), dc.Poll.IN_FLAGS, self.handle_listener
-        )
+        # map of fd's to socket objects
+        self.listeners = {}
+
+        for spec in listeners:
+            l = listener_from_spec(spec)
+            self.poll.register(l.fileno(), dc.Poll.IN_FLAGS, self.handle_listener)
+            self.listeners[l.fileno()] = l
 
         self.stage_names = [stage_config.name for stage_config in config.stages]
 
@@ -75,17 +167,62 @@ class Server:
                 stage_config.build_stage(self.poll, self.logger, self.state_machine)
             )
 
+        if quiet or oneshot:
+            # Don't use a Console.
+            self.console = None
+        else:
+            self.console = dc.Console(
+                self.logger,
+                self.poll,
+                self.stage_names,
+                self.state_machine.set_target,
+                config.commands,
+                self.state_machine.run_command,
+                self.state_machine.quit,
+            )
+            self.state_machine.add_callback(self.console.state_cb)
+
+            def _sigwinch_handler(signum, frame):
+                """Enqueue a call to _sigwinch_callback() via poll()."""
+                os.write(self.state_machine.get_report_fd(), b"W")
+
+            def _sigwinch_callback():
+                """Handle the SIGWINCH when it is safe"""
+                self.console.handle_window_change()
+
+            self.state_machine.add_report_callback("W", _sigwinch_callback)
+            signal.signal(signal.SIGWINCH, _sigwinch_handler)
+
+        if oneshot:
+            # In case of a signal state_machine.quit() may have been called, so we check try to
+            # detect if we need to call quit or not from the OneshotCB.
+            def quit_cb():
+                if not self.state_machine.quitting:
+                    self.state_machine.quit()
+
+            oneshot = OneshotCB(quit_cb)
+            self.state_machine.add_callback(oneshot.state_cb)
+
+            self.logger.add_callback(oneshot.log_cb)
+
         self.clients = set()
 
         self.command_config = config.commands
 
-        # Write a traceback to stdout on SIGUSR1 (10)
+        # Write a traceback on SIGUSR1 (10)
         def _traceback_signal(signum, frame):
-            traceback.print_stack(frame)
+            if self.console is None:
+                # print right to stdout
+                print("------")
+                traceback.print_stack(frame)
+            else:
+                # print to a file, since we'll have a Console on stdout.
+                with open(os.path.join(config.temp_dir, "traceback"), "a") as f:
+                    f.write("------\n")
+                    traceback.print_stack(frame, file=f)
 
         signal.signal(signal.SIGUSR1, _traceback_signal)
 
-    def run(self):
         def _quit_signal(signum, frame):
             """Enqueue a call to _quit_in_loop() via poll()."""
             os.write(self.state_machine.get_report_fd(), b"Q")
@@ -97,19 +234,30 @@ class Server:
         signal.signal(signal.SIGTERM, _quit_signal)
         signal.signal(signal.SIGINT, _quit_signal)
 
-        self.state_machine.set_target(len(self.stage_names))
+    def run(self):
+        with contextlib.ExitStack() as ex:
+            if self.console:
+                # Configure the terminal.
+                ex.enter_context(dc.terminal_config())
 
-        # TODO: handle startup_input in server mode
-        # for c in config.startup_input:
-        #     console.handle_key(c)
+                # Draw the initial screen.
+                self.console.start()
 
-        while self.state_machine.should_run():
-            self.poll.poll()
+            self.state_machine.set_target(len(self.stage_names))
 
-    def handle_listener(self, ev):
+            if self.console:
+                # TODO: handle startup_input without console
+                for c in self.config.startup_input:
+                    self.console.handle_key(c)
+
+            while self.state_machine.should_run():
+                self.poll.poll()
+
+    def handle_listener(self, ev, fd):
         if ev & dc.Poll.IN_FLAGS:
             # accept a connection
-            sock, _ = self.listener.accept()
+            l = self.listeners[fd]
+            sock, _ = l.accept()
             client = Connection(
                 self.poll, sock, self.jmsg_cb, self.client_conn_close_cb
             )
@@ -131,12 +279,12 @@ class Server:
         for k, v in jmsg.items():
             if k == "set_target":
                 self.state_machine.set_target(v)
-            if k == "run_cmd":
+            elif k == "run_cmd":
                 self.state_machine.run_cmd(v)
             elif k == "quit":
                 self.state_machine.quit()
             else:
-                raise ValueError(f"invalid jmsg: {k}\n")
+                raise ValueError(f"invalid jmsg: '{k}'\n")
 
     def log_cb(self, msg, stream):
         # the server listens to log callbacks and broadcasts them to all clients
@@ -155,9 +303,8 @@ class Server:
 
 
 class Client:
-    def __init__(self, host, port):
-        sock = socket.socket()
-        sock.connect((host, port))
+    def __init__(self, spec):
+        sock = connection_from_spec(spec)
 
         buf = b""
         while b"\n" not in buf:
@@ -221,16 +368,17 @@ class Client:
         self.keep_going = True
 
     def run(self):
-        self.console.start()
-        self.console.state_cb(*self.first_state)
+        with dc.terminal_config():
+            self.console.start()
+            self.console.state_cb(*self.first_state)
 
-        # for c in config.startup_input:
-        #     self.console.handle_key(c)
+            # for c in config.startup_input:
+            #     self.console.handle_key(c)
 
-        while self.keep_going:
-            self.poll.poll()
+            while self.keep_going:
+                self.poll.poll()
 
-    def handle_pipe(self, ev):
+    def handle_pipe(self, ev, _):
         if ev & dc.Poll.IN_FLAGS:
             buf = self.pipe_rd.read(4096)
             for c in buf:
