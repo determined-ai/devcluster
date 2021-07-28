@@ -672,7 +672,13 @@ class Console:
         state, _, target = self.status
 
         # When change_scroll_region is available, we only write the bar when we have to modify it.
-        new_bar_state = (get_cols(), state, target, self.active_streams)
+        new_bar_state = (
+            get_cols(),
+            get_rows(),
+            state,
+            target,
+            tuple(self.active_streams),
+        )
         if dc.has_csr() and self.last_bar_state == new_bar_state:
             if prebar_bytes:
                 os.write(sys.stdout.fileno(), prebar_bytes)
