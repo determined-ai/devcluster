@@ -166,6 +166,11 @@ class DBConfig(StageConfig):
                             "regex": "listening on IP"
                         }
                     },
+                    {
+                        "conncheck": {
+                            "port": 5432,
+                        }
+                    },
                 ],
             }
         )
