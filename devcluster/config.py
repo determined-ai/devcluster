@@ -158,17 +158,12 @@ class DBConfig(StageConfig):
                 "post": [
                     {
                         "logcheck": {
-                            "regex": "database system is ready to accept connections"
-                        }
-                    },
-                    {
-                        "logcheck": {
                             "regex": "listening on IP"
                         }
                     },
                     {
-                        "conncheck": {
-                            "port": 5432,
+                        "logcheck": {
+                            "regex": "database system is ready to accept connections"
                         }
                     },
                 ],
