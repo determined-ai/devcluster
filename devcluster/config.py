@@ -156,11 +156,12 @@ class DBConfig(StageConfig):
                 "kill_signal": "TERM",
                 "run_args": run_args,
                 "post": [
+                    {"logcheck": {"regex": "listening on IP"}},
                     {
                         "logcheck": {
                             "regex": "database system is ready to accept connections"
                         }
-                    }
+                    },
                 ],
             }
         )
