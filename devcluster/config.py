@@ -161,11 +161,6 @@ class DBConfig(StageConfig):
                             "regex": "listening on IP"
                         }
                     },
-                    {
-                        "logcheck": {
-                            "regex": "database system is ready to accept connections"
-                        }
-                    },
                 ],
             }
         )
