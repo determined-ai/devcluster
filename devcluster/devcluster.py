@@ -490,8 +490,13 @@ class Console:
 
         # Empty the logs with newlines because it reduces flicker, especially for has_csr()
         prebar_bytes = (
-            b"\n" * (get_rows() - 2)
+            # go to the bottom of the scroll region...
+            self.place_cursor(get_rows(), 1)
+            # write enough newlines to flush the screen...
+            + b"\n" * (get_rows() - 2)
+            # go to the top of the scroll region
             + self.place_cursor(3, 1)
+            # write the logs out
             + b"".join(x[1] for x in new_logs)
         )
 
