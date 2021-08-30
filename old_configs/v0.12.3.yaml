@@ -31,7 +31,10 @@ stages:
   - master:
       pre:
         - sh: make -C master build-files install-native
-      binary: ~/go/bin/determined-master
+      cmdline:
+        - $GOPATH/bin/go/bin/determined-master
+        - --config-file
+        - :config
       config_file:
         db:
           host: localhost
@@ -53,7 +56,11 @@ stages:
   - agent:
       pre:
         - sh: make -C agent install-native
-      binary: ~/go/bin/determined-agent
+      cmdline:
+        - $GOPATH/bin/determined-agent
+        - run
+        - --config-file
+        - :config
       config_file:
         # In 0.12.3, container_master_host was not available, so you should use
         # your computer's external IP address here.

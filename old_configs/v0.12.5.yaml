@@ -10,7 +10,6 @@ stages:
         - sh: make -C proto build
         - sh: make -C master build
         - sh: make -C tools prep-root
-      binary: master/build/determined-master
       config_file:
         db:
           host: localhost
@@ -29,7 +28,6 @@ stages:
   - agent:
       pre:
         - sh: make -C agent build
-      binary: agent/build/determined-agent
       config_file:
         master_host: 127.0.0.1
         master_port: 8080

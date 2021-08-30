@@ -61,12 +61,18 @@ stages:
         - sh: make -C master build
         - sh: make -C tools prep-root
 
-      # binary: master/build/determined-master
+      # cmdline has the special property that the ":config" string will be
+      # replaced with a temporary file containing the contents of the
+      # config_file field.
+      # cmdline:
+      #   - master/build/determined-master
+      #   - --config-file
+      #   - :config
 
       # post is the set of postcommands to run after starting the master, before
       # considering it "ready".  You probably never have to change this.
       # post:
-      #   - logcheck
+      #   - logcheck:
       #       regex: accepting incoming connections on port
 
       # config_file is the most important config detail for the master stage.
@@ -92,7 +98,11 @@ stages:
       # If you have multiple agent stages, they should have different names.
       # name: agent
 
-      # binary: master/build/determined-agent
+      # cmdline:
+      #   - agent/build/determined-agent
+      #   - run
+      #   - --config-file
+      #   - :config
 
       pre:
         - sh: make -C agent build
