@@ -9,7 +9,7 @@ install it into your python environment with `pip install -e .` and then just
 call `devcluster` by itself.
 
 The first time you run it, it will give you the option to automatically install
-a configuration file (see `devcluster/example.yaml`).
+the default configuration file (see `devcluster/example.yaml`).
 
 By default, devcluster needs to run from the root of a `determined` source
 tree.  You can do this in one of a few ways:
