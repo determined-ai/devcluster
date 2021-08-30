@@ -11,4 +11,11 @@ setuptools.setup(
     packages=["devcluster"],
     entry_points={"console_scripts": ["devcluster = devcluster.__main__:main"]},
     license="Apache License 2.0",
+    include_package_data=True,
+    install_requires=[
+        "appdirs",
+        "pyyaml",
+        # in python 3.9, we use importlib.resources instead
+        "setuptools;python_version<'3.9'",
+    ],
 )
