@@ -4,12 +4,12 @@ A developer tool for running the Determined cluster.
 
 ## Configuring and Running
 
-Check out the `example.yaml` config file, which you should be able to use
-out-of-the-box by just copying it to `~/.devcluster.yaml`.
-
 You can run the code from the git root by running `python -m devcluster`, or
 install it into your python environment with `pip install -e .` and then just
 call `devcluster` by itself.
+
+The first time you run it, it will give you the option to automatically install
+a configuration file (see `devcluster/example.yaml`).
 
 By default, devcluster needs to run from the root of a `determined` source
 tree.  You can do this in one of a few ways:
@@ -24,7 +24,7 @@ You can either specify a config file via the `--config` or `-c` option, or
 ## How `devcluster` Works
 
 devcluster runs a cluster with a linear dependency graph of stages.  With the
-default config (`example.yaml`), those stages are:
+default config (`devcluster/example.yaml`), those stages are:
 
 - `DEAD`
 - `DB`

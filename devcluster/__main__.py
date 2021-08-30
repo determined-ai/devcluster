@@ -10,7 +10,26 @@ import sys
 import yaml
 from typing import Optional, Sequence
 
+import appdirs
+
 import devcluster as dc
+
+
+# prefer stdlib importlib.resources over pkg_resources, when available
+try:
+    import importlib.resources
+
+    def _get_example_yaml():
+        ref = importlib.resources.files("devcluster").joinpath("example.yaml")
+        with ref.open("rb") as f:
+            return f.read()
+
+
+except ImportError:
+    import pkg_resources
+
+    def _get_example_yaml():
+        return pkg_resources.resource_string("devcluster", "example.yaml")
 
 
 @contextlib.contextmanager
@@ -50,6 +69,32 @@ def get_host_addr_for_docker() -> Optional[str]:
             return groups[0]
 
     return None
+
+
+def maybe_install_default_config():
+    # Don't bother asking the user if the user isn't able to tell us.
+    if not sys.stdin.isatty():
+        return None
+
+    # Suggest ~/.devcluster.yaml over appdirs.user_config_dir() in order to nudge dev environments
+    # towards uniformity.
+    if "HOME" not in os.environ:
+        return None
+    path = os.path.join(os.environ["HOME"], ".devcluster.yaml")
+
+    prompt = f"config not found, install a default config at {path}? [y]/n: "
+    resp = input(prompt)
+    while resp not in ("y", "n", ""):
+        print("invalid input; type 'y' or 'n'", file=sys.stderr)
+        resp = input(prompt)
+
+    if resp == "n":
+        # user declined
+        return None
+
+    with open(path, "wb") as f:
+        f.write(_get_example_yaml())
+    return path
 
 
 def main():
@@ -105,23 +150,24 @@ def main():
         config_path = args.config
     else:
         check_paths = []
+        # Always support ~/.devcluster.yaml
         if "HOME" in os.environ:
             check_paths.append(os.path.join(os.environ["HOME"], ".devcluster.yaml"))
-        if "XDG_CONFIG_HOME" in os.environ:
-            check_paths.append(
-                os.path.join(os.environ["XDG_CONFIG_HOME"], "devcluster.yaml")
-            )
+        # Also support the OS's standard config path.
+        check_paths.append(os.path.join(appdirs.user_config_dir(), "devcluster.yaml"))
         for path in check_paths:
             if os.path.exists(path):
                 config_path = path
                 break
         else:
-            print(
-                "you must either specify --config or use the file",
-                " or ".join(check_paths),
-                file=sys.stderr,
-            )
-            sys.exit(1)
+            config_path = maybe_install_default_config()
+            if config_path is None:
+                print(
+                    "you must either specify --config or put a config file at",
+                    " or ".join(check_paths),
+                    file=sys.stderr,
+                )
+                sys.exit(1)
 
     env = dict(os.environ)
 
