@@ -10,12 +10,31 @@ import devcluster as dc
 _save_cursor = None
 
 
+def tput(*args):
+    cmd = ["tput", *args]
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    out, err = p.communicate()
+
+    if p.returncode != 0:
+        err_str = err.decode("utf-8").strip()
+        err_msg = str(
+            f"'{' '.join(cmd)}' exited non-zero({p.returncode}):\n"
+            f"stdout: '{out.decode('utf-8').strip()}'\nstderr: '{err_str}'\n"
+        )
+        if "unknown terminal" in err_str:
+            err_msg += str(
+                "If using a conda environment you may need to "
+                "'export TERMINFO=\"/usr/share/terminfo\"'"
+            )
+        raise RuntimeError(err_msg)
+
+    return out.strip()
+
+
 def save_cursor():
     global _save_cursor
     if _save_cursor is None:
-        p = subprocess.Popen(["tput", "sc"], stdout=subprocess.PIPE)
-        _save_cursor = p.stdout.read().strip()
-        assert p.wait() == 0
+        _save_cursor = tput("sc")
     return _save_cursor
 
 
@@ -25,9 +44,7 @@ _restore_cursor = None
 def restore_cursor():
     global _restore_cursor
     if _restore_cursor is None:
-        p = subprocess.Popen(["tput", "rc"], stdout=subprocess.PIPE)
-        _restore_cursor = p.stdout.read().strip()
-        assert p.wait() == 0
+        _restore_cursor = tput("rc")
     return _restore_cursor
 
 
@@ -37,9 +54,7 @@ _cols = None
 def get_cols(recheck=False):
     global _cols
     if _cols is None or recheck:
-        p = subprocess.Popen(["tput", "cols"], stdout=subprocess.PIPE)
-        _cols = int(p.stdout.read().strip())
-        assert p.wait() == 0
+        _cols = int(tput("cols"))
     return _cols
 
 
@@ -49,9 +64,7 @@ _rows = None
 def get_rows(recheck=False):
     global _rows
     if _rows is None or recheck:
-        p = subprocess.Popen(["tput", "lines"], stdout=subprocess.PIPE)
-        _rows = int(p.stdout.read().strip())
-        assert p.wait() == 0
+        _rows = int(tput("lines"))
     return _rows
 
 
