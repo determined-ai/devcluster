@@ -118,6 +118,7 @@ class DBConfig(StageConfig):
             "data_dir",
             "container_name",
             "image_name",
+            "cmdline",
         }
         required = set()
         check_keys(allowed, required, config, type(self).__name__)
@@ -129,6 +130,11 @@ class DBConfig(StageConfig):
         self.data_dir = read_path(config.get("data_dir"))
         self.name = str(config.get("name", "db"))
         self.image_name = str(config.get("image_name", "postgres:10.14"))
+
+        check_list_of_strings(
+            config.get("cmdline", []), "DBConfig.cmdline must be a list of strings"
+        )
+        self.cmdline = config.get("cmdline", ["postgres", "-N", "10000"])
 
     def build_stage(self, poll, logger, state_machine):
 
@@ -145,8 +151,7 @@ class DBConfig(StageConfig):
             "-e",
             f"POSTGRES_PASSWORD={self.password}",
             self.image_name,
-            "-N",
-            "10000",
+            *self.cmdline,
         ]
 
         custom_config = CustomDockerConfig(
