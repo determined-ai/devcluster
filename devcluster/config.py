@@ -166,14 +166,14 @@ class DBConfig(StageConfig):
 
 class MasterConfig(StageConfig):
     def __init__(self, config, temp_dir):
-        allowed = {"pre", "post", "binary", "config_file", "name"}
+        allowed = {"pre", "post", "cmdline", "config_file", "name"}
         required = set()
         check_keys(allowed, required, config, type(self).__name__)
 
         self.config_file = config.get("config_file", {})
 
         check_list_of_dicts(
-            config.get("pre", []), "CustomConfig.pre must be a list of dicts"
+            config.get("pre", []), "MasterConfig.pre must be a list of dicts"
         )
         self.pre = config.get("pre", [])
         self.post = config.get(
@@ -181,7 +181,13 @@ class MasterConfig(StageConfig):
             [{"logcheck": {"regex": "accepting incoming connections on port"}}],
         )
 
-        self.binary = read_path(config.get("binary", "master/build/determined-master"))
+        check_list_of_strings(
+            config.get("cmdline", []), "MasterConfig.cmdline must be a list of strings"
+        )
+        self.cmdline = config.get(
+            "cmdline", ["master/build/determined-master", "--config-file", ":config"]
+        )
+        self.cmdline = [read_path(s) for s in self.cmdline]
 
         self.name = config.get("name", "master")
         self.temp_dir = temp_dir
@@ -191,11 +197,7 @@ class MasterConfig(StageConfig):
         with open(config_path, "w") as f:
             f.write(yaml.dump(self.config_file))
 
-        cmd = [
-            self.binary,
-            "--config-file",
-            config_path,
-        ]
+        cmd = [config_path if arg == ":config" else arg for arg in self.cmdline]
 
         custom_config = CustomConfig(
             {
@@ -212,18 +214,25 @@ class MasterConfig(StageConfig):
 
 class AgentConfig(StageConfig):
     def __init__(self, config, temp_dir):
-        allowed = {"pre", "binary", "config_file", "name"}
+        allowed = {"pre", "cmdline", "config_file", "name"}
         required = set()
         check_keys(allowed, required, config, type(self).__name__)
-
-        self.binary = read_path(config.get("binary", "agent/build/determined-agent"))
 
         self.config_file = config.get("config_file", {})
 
         check_list_of_dicts(
-            config.get("pre", []), "CustomConfig.pre must be a list of dicts"
+            config.get("pre", []), "AgentConfig.pre must be a list of dicts"
         )
         self.pre = config.get("pre", [])
+
+        check_list_of_strings(
+            config.get("cmdline", []), "AgentConfig.cmdline must be a list of strings"
+        )
+        self.cmdline = config.get(
+            "cmdline",
+            ["agent/build/determined-agent", "run", "--config-file", ":config"],
+        )
+        self.cmdline = [read_path(s) for s in self.cmdline]
 
         self.name = config.get("name", "agent")
         self.temp_dir = temp_dir
@@ -233,12 +242,7 @@ class AgentConfig(StageConfig):
         with open(config_path, "w") as f:
             f.write(yaml.dump(self.config_file))
 
-        cmd = [
-            self.binary,
-            "run",
-            "--config-file",
-            config_path,
-        ]
+        cmd = [config_path if arg == ":config" else arg for arg in self.cmdline]
 
         custom_config = CustomConfig({"cmd": cmd, "name": self.name, "pre": self.pre})
 
