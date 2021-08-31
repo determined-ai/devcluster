@@ -5,11 +5,12 @@ import threading
 import time
 import socket
 import subprocess
+import typing
 
 import devcluster as dc
 
 
-class AtomicOperation:
+class AtomicOperation(metaclass=abc.ABCMeta):
     """
     Only have one atomic operation in flight at a time.  You must wait for it to finish but you may
     request it ends early if you know you will ignore its output.
@@ -19,37 +20,37 @@ class AtomicOperation:
     """
 
     @abc.abstractmethod
-    def __str__(self):
+    def __str__(self) -> str:
         """Return a one-word summary of what the operation is"""
         pass
 
     @abc.abstractmethod
-    def cancel(self):
+    def cancel(self) -> None:
         pass
 
     @abc.abstractmethod
-    def join(self):
+    def join(self) -> None:
         pass
 
 
-class ConnCheck(threading.Thread):
+class ConnCheck(threading.Thread, AtomicOperation):
     """ConnCheck is an AtomicOperation."""
 
-    def __init__(self, host, port, report_fd):
+    def __init__(self, host: str, port: int, report_fd: int):
         self.host = host
         self.port = port
         self.report_fd = report_fd
         self.quit = False
 
-        super().__init__()
+        threading.Thread.__init__(self)
 
         # AtomicOperations should not need a start() call.
         self.start()
 
-    def __str__(self):
+    def __str__(self) -> str:
         return "connecting"
 
-    def run(self):
+    def run(self) -> None:
         success = False
         try:
             # 30 seconds to succeed
@@ -75,7 +76,7 @@ class ConnCheck(threading.Thread):
             # "S"uccess or "F"ail
             os.write(self.report_fd, b"S" if success else b"F")
 
-    def cancel(self):
+    def cancel(self) -> None:
         self.quit = True
 
 
@@ -84,7 +85,13 @@ class LogCheck(AtomicOperation):
     Wait for a log stream to print out a phrase before allowing the state to progress.
     """
 
-    def __init__(self, logger, stream, report_fd, regex):
+    def __init__(
+        self,
+        logger: dc.Logger,
+        stream: str,
+        report_fd: int,
+        regex: typing.Union[str, bytes],
+    ):
         self.logger = logger
         self.stream = stream
         self.report_fd = report_fd
@@ -95,19 +102,19 @@ class LogCheck(AtomicOperation):
 
         self.logger.add_callback(self.log_cb)
 
-    def __str__(self):
+    def __str__(self) -> str:
         return "checking"
 
-    def cancel(self):
+    def cancel(self) -> None:
         if not self.canceled:
             self.canceled = True
             os.write(self.report_fd, b"F")
             self.logger.remove_callback(self.log_cb)
 
-    def join(self):
+    def join(self) -> None:
         pass
 
-    def log_cb(self, msg, stream):
+    def log_cb(self, msg: bytes, stream: str) -> None:
         if stream != self.stream:
             return
 
@@ -119,7 +126,16 @@ class LogCheck(AtomicOperation):
 
 
 class AtomicSubprocess(AtomicOperation):
-    def __init__(self, poll, logger, stream, report_fd, cmd, quiet=False, callbacks=()):
+    def __init__(
+        self,
+        poll: dc.Poll,
+        logger: dc.Logger,
+        stream: str,
+        report_fd: int,
+        cmd: typing.List[str],
+        quiet: bool = False,
+        callbacks: typing.Iterable[typing.Callable[[bool], None]] = (),
+    ) -> None:
         self.poll = poll
         self.logger = logger
         self.stream = stream
@@ -134,23 +150,28 @@ class AtomicSubprocess(AtomicOperation):
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL if quiet else subprocess.PIPE,
             stderr=subprocess.PIPE,
-        )
-        self.out = None if quiet else self.proc.stdout.fileno()
-        self.err = self.proc.stderr.fileno()
-
+        )  # type: typing.Optional[subprocess.Popen]
+        self.out = None
         if not quiet:
+            assert self.proc.stdout
+            self.out = self.proc.stdout.fileno()
+        assert self.proc.stderr
+        self.err = self.proc.stderr.fileno()  # type: typing.Optional[int]
+
+        if self.out is not None:
             dc.nonblock(self.out)
         dc.nonblock(self.err)
 
-        if not quiet:
+        if self.out is not None:
             self.poll.register(self.out, dc.Poll.IN_FLAGS, self._handle_out)
         self.poll.register(self.err, dc.Poll.IN_FLAGS, self._handle_err)
 
-    def __str__(self):
+    def __str__(self) -> str:
         return "building"
 
-    def _maybe_wait(self):
+    def _maybe_wait(self) -> None:
         """Only respond after both stdout and stderr have closed."""
+        assert self.proc
         if self.out is None and self.err is None:
             ret = self.proc.wait()
             self.proc = None
@@ -173,7 +194,8 @@ class AtomicSubprocess(AtomicOperation):
 
             os.write(self.report_fd, b"S" if success else b"F")
 
-    def _handle_out(self, ev, _):
+    def _handle_out(self, ev: int, _: int) -> None:
+        assert self.out
         if ev & dc.Poll.IN_FLAGS:
             self.logger.log(os.read(self.out, 4096), self.stream)
         if ev & dc.Poll.ERR_FLAGS:
@@ -182,7 +204,8 @@ class AtomicSubprocess(AtomicOperation):
             self.out = None
             self._maybe_wait()
 
-    def _handle_err(self, ev, _):
+    def _handle_err(self, ev: int, _: int) -> None:
+        assert self.err
         if ev & dc.Poll.IN_FLAGS:
             self.logger.log(os.read(self.err, 4096), self.stream)
         if ev & dc.Poll.ERR_FLAGS:
@@ -191,23 +214,24 @@ class AtomicSubprocess(AtomicOperation):
             self.err = None
             self._maybe_wait()
 
-    def cancel(self):
+    def cancel(self) -> None:
+        assert self.proc
         self.dying = True
         self.proc.kill()
 
-    def join(self):
+    def join(self) -> None:
         pass
 
 
 class DockerRunAtomic(AtomicSubprocess):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: typing.Any, **kwargs: typing.Any) -> None:
         kwargs["quiet"] = True
         super().__init__(*args, **kwargs)
 
-    def __str__(self):
+    def __str__(self) -> str:
         return "starting"
 
-    def cancel(self):
+    def cancel(self) -> None:
         # Don't support canceling at all; it creates a race condition where we don't know when
         # we can docker kill the container.
         pass

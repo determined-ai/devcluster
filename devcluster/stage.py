@@ -1,43 +1,44 @@
 import abc
 import os
 import subprocess
+import typing
 
 import devcluster as dc
 
 
 class Stage:
     @abc.abstractmethod
-    def run_command(self):
+    def run_command(self) -> None:
         pass
 
     @abc.abstractmethod
-    def running(self):
+    def running(self) -> bool:
         pass
 
-    def killable(self):
+    def killable(self) -> bool:
         """By default, killable() returns running().  It's more complex for docker"""
         return self.running()
 
     @abc.abstractmethod
-    def kill(self):
+    def kill(self) -> None:
         pass
 
     @abc.abstractmethod
-    def reset(self):
+    def reset(self) -> None:
         pass
 
     @abc.abstractmethod
-    def get_precommand(self):
+    def get_precommand(self) -> typing.Optional[dc.AtomicOperation]:
         """Return the next AtomicOperation or None, at which point it is safe to run_command)."""
         pass
 
     @abc.abstractmethod
-    def get_postcommand(self):
+    def get_postcommand(self) -> typing.Optional[dc.AtomicOperation]:
         """Return the next AtomicOperation or None, at which point the command is up."""
         pass
 
     @abc.abstractmethod
-    def log_name(self):
+    def log_name(self) -> str:
         """return the name of this stage, it must be unique"""
         pass
 
@@ -45,55 +46,71 @@ class Stage:
 class DeadStage(Stage):
     """A noop stage for the base state of the state machine"""
 
-    def __init__(self, state_machine):
+    def __init__(self, state_machine: dc.StateMachine) -> None:
         self.state_machine = state_machine
         self._running = False
 
-    def run_command(self):
+    def run_command(self) -> None:
         self._running = True
 
-    def running(self):
+    def running(self) -> bool:
         return self._running
 
-    def kill(self):
+    def kill(self) -> None:
         self._running = False
         self.state_machine.next_thing()
 
-    def reset(self):
+    def reset(self) -> None:
         pass
 
-    def get_precommand(self):
+    def get_precommand(self) -> typing.Optional[dc.AtomicOperation]:
         pass
 
-    def get_postcommand(self):
+    def get_postcommand(self) -> typing.Optional[dc.AtomicOperation]:
         pass
 
-    def log_name(self):
+    def log_name(self) -> str:
         return "dead"
 
 
-class Process(Stage):
+class BaseProcess(Stage, metaclass=abc.ABCMeta):
     """
-    A long-running process may have precommands to run first and postcommands before it is ready.
+    The parts of Process and DockerProcess which are reused.
     """
 
-    def __init__(self, config, poll, logger, state_machine):
-        self.proc = None
-        self.out = None
-        self.err = None
+    def __init__(
+        self,
+        poll: dc.Poll,
+        logger: dc.Logger,
+        state_machine: dc.StateMachine,
+        name: str,
+        pre: typing.List[dc.AtomicConfig],
+        post: typing.List[dc.AtomicConfig],
+    ) -> None:
+        self.proc = None  # type: typing.Optional[subprocess.Popen]
+        self.out = None  # type: typing.Optional[int]
+        self.err = None  # type: typing.Optional[int]
         self.dying = False
 
-        self.config = config
         self.poll = poll
         self.logger = logger
         self.state_machine = state_machine
 
+        self.name = name
+        self.pre = pre
+        self.post = post
+
         self.reset()
 
-    def wait(self):
-        return self.proc.wait()
+    def reset(self) -> None:
+        self.precmds_run = 0
+        self.postcmds_run = 0
 
-    def _maybe_wait(self):
+    @abc.abstractmethod
+    def wait(self) -> int:
+        pass
+
+    def _maybe_wait(self) -> None:
         """wait() on proc if both stdout and stderr are empty."""
         if not self.dying:
             self.logger.log(f"{self.log_name()} closing unexpectedly!\n")
@@ -110,7 +127,8 @@ class Process(Stage):
             self.reset()
             self.state_machine.next_thing()
 
-    def _handle_out(self, ev, _):
+    def _handle_out(self, ev: int, _: int) -> None:
+        assert self.out
         if ev & dc.Poll.IN_FLAGS:
             self.logger.log(os.read(self.out, 4096), self.log_name())
         if ev & dc.Poll.ERR_FLAGS:
@@ -119,7 +137,8 @@ class Process(Stage):
             self.out = None
             self._maybe_wait()
 
-    def _handle_err(self, ev, _):
+    def _handle_err(self, ev: int, _: int) -> None:
+        assert self.err
         if ev & dc.Poll.IN_FLAGS:
             self.logger.log(os.read(self.err, 4096), self.log_name())
         if ev & dc.Poll.ERR_FLAGS:
@@ -128,9 +147,9 @@ class Process(Stage):
             self.err = None
             self._maybe_wait()
 
-    def get_precommand(self):
-        if self.precmds_run < len(self.config.pre):
-            precmd_config = self.config.pre[self.precmds_run]
+    def get_precommand(self) -> typing.Optional[dc.AtomicOperation]:
+        if self.precmds_run < len(self.pre):
+            precmd_config = self.pre[self.precmds_run]
             self.precmds_run += 1
 
             return precmd_config.build_atomic(
@@ -141,9 +160,9 @@ class Process(Stage):
             )
         return None
 
-    def get_postcommand(self):
-        if self.postcmds_run < len(self.config.post):
-            postcmd_config = self.config.post[self.postcmds_run]
+    def get_postcommand(self) -> typing.Optional[dc.AtomicOperation]:
+        if self.postcmds_run < len(self.post):
+            postcmd_config = self.post[self.postcmds_run]
             self.postcmds_run += 1
 
             return postcmd_config.build_atomic(
@@ -154,7 +173,35 @@ class Process(Stage):
             )
         return None
 
-    def run_command(self):
+    def running(self) -> bool:
+        return self.proc is not None
+
+    def log_name(self) -> str:
+        return self.name
+
+
+class Process(BaseProcess):
+    """
+    A long-running process may have precommands to run first and postcommands before it is ready.
+    """
+
+    def __init__(
+        self,
+        config: dc.CustomConfig,
+        poll: dc.Poll,
+        logger: dc.Logger,
+        state_machine: dc.StateMachine,
+    ) -> None:
+        super().__init__(
+            poll, logger, state_machine, config.name, config.pre, config.post
+        )
+        self.config = config
+
+    def wait(self) -> int:
+        assert self.proc
+        return self.proc.wait()
+
+    def run_command(self) -> None:
         self.dying = False
         env = dict(os.environ)
         env.update(self.config.env)
@@ -168,6 +215,8 @@ class Process(Stage):
             # Run with a different process group to isolate from signals in the parent process.
             preexec_fn=os.setpgrp,
         )
+        assert self.proc.stdout
+        assert self.proc.stderr
         self.out = self.proc.stdout.fileno()
         self.err = self.proc.stderr.fileno()
 
@@ -177,29 +226,29 @@ class Process(Stage):
         self.poll.register(self.out, dc.Poll.IN_FLAGS, self._handle_out)
         self.poll.register(self.err, dc.Poll.IN_FLAGS, self._handle_err)
 
-    def running(self):
-        return self.proc is not None
-
-    def kill(self):
+    def kill(self) -> None:
         # kill via signal
         self.dying = True
+        assert self.proc
         self.proc.kill()
 
-    def log_name(self):
-        return self.config.name
 
-    def reset(self):
-        self.precmds_run = 0
-        self.postcmds_run = 0
-
-
-class DockerProcess(Process):
+class DockerProcess(BaseProcess):
     """
     A long-running process in docker with special startup and kill semantics.
     """
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(
+        self,
+        config: dc.CustomDockerConfig,
+        poll: dc.Poll,
+        logger: dc.Logger,
+        state_machine: dc.StateMachine,
+    ) -> None:
+        super().__init__(
+            poll, logger, state_machine, config.name, config.pre, config.post
+        )
+        self.config = config
 
         # docker run --detach has to be an AtomicOperation because it is way too slow and causes
         # the UI to hang.  This has far-reaching implications, since `running()` is not longer
@@ -207,7 +256,7 @@ class DockerProcess(Process):
         # main subprocess hasn't even been launched.
         self.docker_started = False
 
-    def after_container_start(self, success):
+    def after_container_start(self, success: bool) -> None:
         self.docker_started = success
         if not success:
             self.logger.log(
@@ -216,7 +265,7 @@ class DockerProcess(Process):
                 f"docker container rm {self.config.container_name}\n\n"
             )
 
-    def get_precommand(self):
+    def get_precommand(self) -> typing.Optional[dc.AtomicOperation]:
         # Inherit the precmds behavior from Process.
         precmd = super().get_precommand()
         if precmd is not None:
@@ -244,10 +293,10 @@ class DockerProcess(Process):
 
         return None
 
-    def killable(self):
+    def killable(self) -> bool:
         return self.docker_started or self.proc is not None
 
-    def run_command(self):
+    def run_command(self) -> None:
         self.dying = False
         self.proc = subprocess.Popen(
             ["docker", "container", "logs", "-f", self.config.container_name],
@@ -257,6 +306,8 @@ class DockerProcess(Process):
             # Run with a different process group to isolate from signals in the parent process.
             preexec_fn=os.setpgrp,
         )
+        assert self.proc.stdout
+        assert self.proc.stderr
         self.out = self.proc.stdout.fileno()
         self.err = self.proc.stderr.fileno()
 
@@ -266,7 +317,7 @@ class DockerProcess(Process):
         self.poll.register(self.out, dc.Poll.IN_FLAGS, self._handle_out)
         self.poll.register(self.err, dc.Poll.IN_FLAGS, self._handle_err)
 
-    def docker_wait(self):
+    def docker_wait(self) -> int:
         # Wait for the container.
         self.docker_started = False
 
@@ -278,6 +329,8 @@ class DockerProcess(Process):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
+        assert p.stdout
+        assert p.stderr
         err = p.stderr.read()
         ret = p.wait()
         if ret != 0:
@@ -305,6 +358,7 @@ class DockerProcess(Process):
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
         )
+        assert p.stderr
         err = p.stderr.read()
         ret = p.wait()
         if ret != 0:
@@ -321,7 +375,8 @@ class DockerProcess(Process):
 
         return docker_exit_val
 
-    def wait(self):
+    def wait(self) -> int:
+        assert self.proc
         ret = self.proc.wait()
         if ret != 0:
             self.logger.log(
@@ -334,7 +389,7 @@ class DockerProcess(Process):
 
         return self.docker_wait()
 
-    def kill(self):
+    def kill(self) -> None:
         self.dying = True
         kill_cmd = [
             "docker",
@@ -348,6 +403,7 @@ class DockerProcess(Process):
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
         )
+        assert p.stderr
         err = p.stderr.read()
         ret = p.wait()
         if ret != 0:

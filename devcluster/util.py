@@ -4,15 +4,25 @@ import os
 import termios
 import subprocess
 import sys
+import typing
 
 
-def asbytes(msg):
+class ImpossibleException(Exception):
+    """Mypy isn't always smart enough."""
+
+    pass
+
+
+Text = typing.Union[str, bytes]
+
+
+def asbytes(msg: Text) -> bytes:
     if isinstance(msg, bytes):
         return msg
     return msg.encode("utf8")
 
 
-def nonblock(fd):
+def nonblock(fd: int) -> None:
     flags = fcntl.fcntl(fd, fcntl.F_GETFL)
     fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK | os.O_CLOEXEC)
 
@@ -20,7 +30,7 @@ def nonblock(fd):
 _has_csr = None
 
 
-def has_csr():
+def has_csr() -> bool:
     global _has_csr
     if _has_csr is None:
         try:
@@ -36,14 +46,14 @@ def has_csr():
 
 
 @contextlib.contextmanager
-def terminal_config():
+def terminal_config() -> typing.Iterator[None]:
     fd = sys.stdin.fileno()
     # old and new are of the form [iflag, oflag, cflag, lflag, ispeed, ospeed, cc]
     old = termios.tcgetattr(fd)
     new = termios.tcgetattr(fd)
 
     # raw terminal settings from `man 3 termios`
-    new[0] = new[0] & ~(
+    new[0] = new[0] & ~(  # type: ignore
         termios.IGNBRK
         | termios.BRKINT
         | termios.PARMRK
@@ -54,9 +64,9 @@ def terminal_config():
         | termios.IXON
     )
     # new[1] = new[1] & ~termios.OPOST;
-    new[2] = new[2] & ~(termios.CSIZE | termios.PARENB)
-    new[2] = new[2] | termios.CS8
-    new[3] = new[3] & ~(
+    new[2] = new[2] & ~(termios.CSIZE | termios.PARENB)  # type: ignore
+    new[2] = new[2] | termios.CS8  # type: ignore
+    new[3] = new[3] & ~(  # type: ignore
         termios.ECHO | termios.ECHONL | termios.ICANON | termios.ISIG | termios.IEXTEN
     )
 
