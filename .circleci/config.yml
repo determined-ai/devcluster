@@ -1,0 +1,21 @@
+version: 2.1
+
+commands:
+  setup-python:
+    steps:
+      - run: pip install -r requirements.txt
+      - run: pip freeze
+
+jobs:
+  lint:
+    docker:
+      - image: python:3.6.9
+    steps:
+      - checkout
+      - setup-python
+      - run: make check
+
+workflows:
+  lint:
+    jobs:
+      - lint
