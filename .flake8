@@ -3,6 +3,9 @@ max-line-length = 100
 exclude =
     .git,
     __pycache__,
+    build,
+    dist,
+
 
 # We ignore F401 in __init__.py because it is expected for there to be
 # "unused imports" when defining a "regular" package. (This file is
@@ -11,6 +14,7 @@ exclude =
 per-file-ignores = __init__.py:F401
 
 # Explanations for ignored error codes:
+# - A003 class attributes should totally be allowed to shadow builtins
 # - D1* (no missing docstrings): too much effort to start enforcing
 # - D200 (short docstring must fit in one line with quotes): stylistic choice
 # - D202 (no blank lines after function docstrings): stylistic choice
@@ -23,7 +27,7 @@ per-file-ignores = __init__.py:F401
 # - C812-C816 (missing trailing comma): stylistic choice
 #
 # - E741 (ambiguous variable name) I disagree
-ignore = D1,D200,D202,D203,D205,D212,D4,E203,W503,C812,C813,C814,C815,C816,E741
+ignore = A003,D1,D200,D202,D203,D205,D212,D4,E203,W503,C812,C813,C814,C815,C816,E741
 
 # show_source = true
 

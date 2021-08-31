@@ -7,12 +7,17 @@ import traceback
 import signal
 import socket
 import sys
-from typing import Optional
+import typing
 
 import devcluster as dc
 
+TCPAddr = typing.Tuple[str, int]
+UnixAddr = str
 
-def read_addr_spec(spec):
+
+def read_addr_spec(
+    spec: str,
+) -> typing.Tuple[typing.Optional[TCPAddr], typing.Optional[UnixAddr]]:
     assert spec
     addr = None
     sock = None
@@ -34,7 +39,7 @@ def read_addr_spec(spec):
     return addr, sock
 
 
-def listener_from_spec(spec):
+def listener_from_spec(spec: str) -> socket.socket:
     addr, sock = read_addr_spec(spec)
     if addr is not None:
         # TCP
@@ -44,6 +49,7 @@ def listener_from_spec(spec):
         l.listen()
     else:
         # Unix
+        assert sock is not None
         l = socket.socket(family=socket.AF_UNIX)
         if os.path.exists(sock):
             os.remove(sock)
@@ -53,7 +59,7 @@ def listener_from_spec(spec):
     return l
 
 
-def connection_from_spec(spec):
+def connection_from_spec(spec: str) -> socket.socket:
     addr, sock = read_addr_spec(spec)
     if addr is not None:
         # TCP
@@ -61,6 +67,7 @@ def connection_from_spec(spec):
         c.connect(addr)
     else:
         # Unix
+        assert sock is not None
         c = socket.socket(family=socket.AF_UNIX)
         c.connect(sock)
 
@@ -72,13 +79,13 @@ class OneshotCB:
     Watch the state to print a message when the final state is up and to quit if anything fails.
     """
 
-    def __init__(self, quit_cb):
-        self.first_target = None
+    def __init__(self, quit_cb: typing.Callable[[], None]) -> None:
+        self.first_target = None  # type: typing.Optional[str]
         self.up = False
         self.failing = False
         self.quit_cb = quit_cb
 
-    def state_cb(self, state, substate, target):
+    def state_cb(self, state: str, substate: str, target: str) -> None:
         if self.first_target is None:
             self.first_target = target
 
@@ -93,7 +100,7 @@ class OneshotCB:
             os.write(sys.stderr.fileno(), b"devcluster is failing\n")
             self.quit_cb()
 
-    def log_cb(self, msg, stream):
+    def log_cb(self, msg: bytes, stream: str) -> None:
         lines = msg.split(b"\n")
         if lines and lines[-1] == b"":
             lines = lines[:-1]
@@ -101,8 +108,22 @@ class OneshotCB:
             os.write(sys.stdout.fileno(), dc.asbytes(stream) + b": " + line + b"\n")
 
 
+# Jmsg is a message from the json-based protocol between server and client.
+Jmsg = typing.Any
+JmsgCB = typing.Callable[[Jmsg], None]
+
+ConnectionCloseCB = typing.Callable[["Connection"], None]
+
+
 class Connection:
-    def __init__(self, poll, sock, read_cb, close_cb, starting_buffer=b""):
+    def __init__(
+        self,
+        poll: dc.Poll,
+        sock: socket.socket,
+        read_cb: JmsgCB,
+        close_cb: ConnectionCloseCB,
+        starting_buffer: bytes = b"",
+    ) -> None:
         self.poll = poll
         self.sock = sock
         self.read_cb = read_cb
@@ -112,11 +133,11 @@ class Connection:
 
         self.poll.register(self.sock.fileno(), dc.Poll.IN_FLAGS, self.handle_sock)
 
-    def write(self, jmsg):
+    def write(self, jmsg: Jmsg) -> None:
         stuff = json.dumps(jmsg).encode("utf8") + b"\n"
         self.sock.send(stuff)
 
-    def handle_sock(self, ev, _):
+    def handle_sock(self, ev: int, _: int) -> None:
         if ev & dc.Poll.IN_FLAGS:
             try:
                 new_bytes = self.sock.recv(4096)
@@ -136,7 +157,7 @@ class Connection:
         elif ev & dc.Poll.ERR_FLAGS:
             self.close()
 
-    def close(self):
+    def close(self) -> None:
         self.poll.unregister(self.handle_sock)
         self.sock.close()
         self.close_cb(self)
@@ -145,12 +166,12 @@ class Connection:
 class Server:
     def __init__(
         self,
-        config,
-        listeners,
-        quiet=False,
-        oneshot=False,
-        initial_target_stage: Optional[str] = None,
-    ):
+        config: dc.Config,
+        listeners: typing.List[str],
+        quiet: bool = False,
+        oneshot: bool = False,
+        initial_target_stage: typing.Optional[str] = None,
+    ) -> None:
         self.config = config
         self.poll = dc.Poll()
 
@@ -202,12 +223,13 @@ class Server:
             )
             self.state_machine.add_callback(self.console.state_cb)
 
-            def _sigwinch_handler(signum, frame):
+            def _sigwinch_handler(signum: typing.Any, frame: typing.Any) -> None:
                 """Enqueue a call to _sigwinch_callback() via poll()."""
                 os.write(self.state_machine.get_report_fd(), b"W")
 
-            def _sigwinch_callback():
+            def _sigwinch_callback() -> None:
                 """Handle the SIGWINCH when it is safe"""
+                assert self.console
                 self.console.handle_window_change()
 
             self.state_machine.add_report_callback("W", _sigwinch_callback)
@@ -216,21 +238,21 @@ class Server:
         if oneshot:
             # In case of a signal state_machine.quit() may have been called, so we check try to
             # detect if we need to call quit or not from the OneshotCB.
-            def quit_cb():
+            def quit_cb() -> None:
                 if not self.state_machine.quitting:
                     self.state_machine.quit()
 
-            oneshot = OneshotCB(quit_cb)
-            self.state_machine.add_callback(oneshot.state_cb)
+            oneshot_cb = OneshotCB(quit_cb)
+            self.state_machine.add_callback(oneshot_cb.state_cb)
 
-            self.logger.add_callback(oneshot.log_cb)
+            self.logger.add_callback(oneshot_cb.log_cb)
 
-        self.clients = set()
+        self.clients = set()  # type: typing.Set[Connection]
 
         self.command_config = config.commands
 
         # Write a traceback on SIGUSR1 (10)
-        def _traceback_signal(signum, frame):
+        def _traceback_signal(signum: typing.Any, frame: typing.Any) -> None:
             if self.console is None:
                 # print right to stdout
                 print("------")
@@ -243,18 +265,18 @@ class Server:
 
         signal.signal(signal.SIGUSR1, _traceback_signal)
 
-        def _quit_signal(signum, frame):
+        def _quit_signal(signum: typing.Any, frame: typing.Any) -> None:
             """Enqueue a call to _quit_in_loop() via poll()."""
             os.write(self.state_machine.get_report_fd(), b"Q")
 
-        def _quit_in_loop():
+        def _quit_in_loop() -> None:
             self.state_machine.quit()
 
         self.state_machine.add_report_callback("Q", _quit_in_loop)
         signal.signal(signal.SIGTERM, _quit_signal)
         signal.signal(signal.SIGINT, _quit_signal)
 
-    def run(self):
+    def run(self) -> None:
         with contextlib.ExitStack() as ex:
             if self.console:
                 # Configure the terminal.
@@ -273,7 +295,7 @@ class Server:
             while self.state_machine.should_run():
                 self.poll.poll()
 
-    def handle_listener(self, ev, fd):
+    def handle_listener(self, ev: int, fd: int) -> None:
         if ev & dc.Poll.IN_FLAGS:
             # accept a connection
             l = self.listeners[fd]
@@ -295,35 +317,35 @@ class Server:
         elif ev & dc.Poll.ERR_FLAGS:
             raise ValueError("listener failed!")
 
-    def jmsg_cb(self, jmsg):
+    def jmsg_cb(self, jmsg: Jmsg) -> None:
         for k, v in jmsg.items():
             if k == "set_target":
                 self.state_machine.set_target(v)
             elif k == "run_cmd":
-                self.state_machine.run_cmd(v)
+                self.state_machine.run_command(v)
             elif k == "quit":
                 self.state_machine.quit()
             else:
                 raise ValueError(f"invalid jmsg: '{k}'\n")
 
-    def log_cb(self, msg, stream):
+    def log_cb(self, msg: bytes, stream: str) -> None:
         # the server listens to log callbacks and broadcasts them to all clients
         jmsg = {"log_cb": [base64.b64encode(msg).decode("utf8"), stream]}
         for client in self.clients:
             client.write(jmsg)
 
-    def state_machine_cb(self, state, atomic, target):
+    def state_machine_cb(self, state: str, atomic: str, target: str) -> None:
         # the server listens to state machine callbacks and broadcasts them to all clients
         jmsg = {"state_cb": [state, atomic, target]}
         for client in self.clients:
             client.write(jmsg)
 
-    def client_conn_close_cb(self, client):
+    def client_conn_close_cb(self, client: Connection) -> None:
         self.clients.remove(client)
 
 
 class Client:
-    def __init__(self, spec):
+    def __init__(self, spec: str) -> None:
         sock = connection_from_spec(spec)
 
         buf = b""
@@ -370,16 +392,16 @@ class Client:
         dc.nonblock(self.pipe_wr)
         self.poll.register(self.pipe_rd, dc.Poll.IN_FLAGS, self.handle_pipe)
 
-        def _sigwinch_handler(signum, frame):
+        def _sigwinch_handler(signum: typing.Any, frame: typing.Any) -> None:
             """Enqueue a call to _sigwinch_callback() via self.poll()."""
             os.write(self.pipe_wr, b"W")
 
         signal.signal(signal.SIGWINCH, _sigwinch_handler)
 
-        self.tracebacks = []
+        self.tracebacks = []  # type: typing.List[typing.List[str]]
 
         # Write a traceback to console output on SIGUSR1 (10)
-        def _traceback_signal(signum, frame):
+        def _traceback_signal(signum: typing.Any, frame: typing.Any) -> None:
             self.tracebacks.append(traceback.format_stack(frame))
             os.write(self.pipe_wr, b"T")
 
@@ -387,7 +409,7 @@ class Client:
 
         self.keep_going = True
 
-    def run(self):
+    def run(self) -> None:
         with dc.terminal_config():
             self.console.start()
             self.console.state_cb(*self.first_state)
@@ -398,24 +420,24 @@ class Client:
             while self.keep_going:
                 self.poll.poll()
 
-    def handle_pipe(self, ev, _):
+    def handle_pipe(self, ev: int, _: int) -> None:
         if ev & dc.Poll.IN_FLAGS:
-            buf = self.pipe_rd.read(4096)
-            for c in buf:
+            buf = os.read(self.pipe_rd, 4096)
+            for c in buf.decode("utf8"):
                 if c == "W":
                     # SIGWINCH
                     self.console.handle_window_change()
                 elif c == "T":
                     # SIGUSR1, or "print me a stack trace"
                     for t in self.tracebacks:
-                        self.logger.log(t)
-                    self.tracbacks = []
+                        self.logger.log("\n".join(t))
+                    self.tracbacks = []  # type: typing.List[typing.List[str]]
                 else:
                     raise ValueError(f"invalid value in Client.handle_pipe(): {c}")
         elif ev & dc.Poll.ERR_FLAGS:
             raise ValueError("stdin closed!")
 
-    def jmsg_cb(self, jmsg):
+    def jmsg_cb(self, jmsg: Jmsg) -> None:
         for key, value in jmsg.items():
             if key == "log_cb":
                 # replay logs through our own Logger
@@ -425,14 +447,14 @@ class Client:
             else:
                 raise ValueError(f"unexpected jmsg: {key}")
 
-    def server_conn_close_cb(self, server_conn):
+    def server_conn_close_cb(self, server_conn: Connection) -> None:
         raise ValueError("Connection to server closed")
 
-    def set_target(self, idx):
+    def set_target(self, idx: int) -> None:
         self.server.write({"set_target": idx})
 
-    def run_command(self, cmdstr):
+    def run_command(self, cmdstr: str) -> None:
         self.server.write({"run_cmd": cmdstr})
 
-    def quit(self):
+    def quit(self) -> None:
         self.keep_going = False

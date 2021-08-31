@@ -3,43 +3,56 @@ import re
 import yaml
 import os
 import string
+import typing
 
 import devcluster as dc
 
 
-def check_keys(allowed, required, config, name):
+def check_string(s: typing.Any, msg: str) -> str:
+    assert isinstance(s, str), msg
+    return s
+
+
+def check_keys(
+    allowed: typing.Set[str], required: typing.Set[str], config: typing.Dict, name: str
+) -> None:
     extra = set(config.keys()).difference(allowed)
     assert len(extra) == 0, f"invalid keys for {name}: {extra}"
     missing = required.difference(set(config.keys()))
     assert len(missing) == 0, f"missing required keys for {name}: {missing}"
 
 
-def check_list_of_strings(l, msg):
+def check_list_of_strings(l: typing.Any, msg: str) -> typing.List[str]:
     assert isinstance(l, list), msg
     for s in l:
         assert isinstance(s, str), msg
+    return l
 
 
-def check_list_of_dicts(l, msg):
+def check_list_of_dicts(l: typing.Any, msg: str) -> typing.List[typing.Dict]:
     assert isinstance(l, list), msg
     for s in l:
         assert isinstance(s, dict), msg
+    return l
 
 
-def check_dict_with_string_keys(d, msg):
+def check_dict_with_string_keys(
+    d: typing.Any, msg: str
+) -> typing.Dict[str, typing.Any]:
     assert isinstance(d, dict), msg
     for k in d:
         assert isinstance(k, str), msg
+    return d
 
 
-def read_path(path):
+def read_path(path: str) -> str:
     """Expand ~'s in a non-None path."""
     if path is None:
         return None
     return os.path.expanduser(path)
 
 
-def expand_env(value, env):
+def expand_env(value: typing.Any, env: typing.Dict[str, str]) -> typing.Any:
     """Expand string variables in the config file"""
     if isinstance(value, str):
         return string.Template(value).safe_substitute(env)
@@ -50,9 +63,12 @@ def expand_env(value, env):
     return value
 
 
-class StageConfig:
+class StageConfig(metaclass=abc.ABCMeta):
+    # All stage configs must define a name.
+    name: str
+
     @staticmethod
-    def read(config, temp_dir):
+    def read(config: typing.Any, temp_dir: str) -> "StageConfig":
         allowed = {"db", "master", "agent", "custom", "custom_docker"}
         # required = set()
 
@@ -73,15 +89,18 @@ class StageConfig:
             return MasterConfig(val, temp_dir)
         elif typ == "agent":
             return AgentConfig(val, temp_dir)
+        raise dc.ImpossibleException()
 
     @abc.abstractmethod
-    def build_stage(self):
+    def build_stage(
+        self, poll: "dc.Poll", logger: "dc.Logger", state_machine: "dc.StateMachine"
+    ) -> "dc.Stage":
         pass
 
 
-class AtomicConfig:
+class AtomicConfig(metaclass=abc.ABCMeta):
     @staticmethod
-    def read(config):
+    def read(config: typing.Any) -> "AtomicConfig":
         allowed = {"custom", "sh", "conncheck", "logcheck"}
         # required = set()
 
@@ -100,16 +119,19 @@ class AtomicConfig:
             return ConnCheckConfig(val)
         elif typ == "logcheck":
             return LogCheckConfig(val)
+        raise dc.ImpossibleException()
 
     @abc.abstractmethod
-    def build_atomic(self, poll, logger, stream, report_fd):
+    def build_atomic(
+        self, poll: "dc.Poll", logger: "dc.Logger", stream: str, report_fd: int
+    ) -> "dc.AtomicOperation":
         pass
 
 
 class DBConfig(StageConfig):
     """DBConfig is a canned stage that runs the database in docker"""
 
-    def __init__(self, config):
+    def __init__(self, config: typing.Any) -> None:
         allowed = {
             "name",
             "port",
@@ -120,7 +142,7 @@ class DBConfig(StageConfig):
             "image_name",
             "cmdline",
         }
-        required = set()
+        required = set()  # type: typing.Set[str]
         check_keys(allowed, required, config, type(self).__name__)
 
         self.port = int(config.get("port", 5432))
@@ -136,7 +158,9 @@ class DBConfig(StageConfig):
         )
         self.cmdline = config.get("cmdline", ["postgres", "-N", "10000"])
 
-    def build_stage(self, poll, logger, state_machine):
+    def build_stage(
+        self, poll: "dc.Poll", logger: "dc.Logger", state_machine: "dc.StateMachine"
+    ) -> "dc.Stage":
 
         if self.data_dir:
             run_args = ["-v", f"{self.data_dir}:/var/lib/postgresql/data"]
@@ -170,9 +194,9 @@ class DBConfig(StageConfig):
 
 
 class MasterConfig(StageConfig):
-    def __init__(self, config, temp_dir):
+    def __init__(self, config: typing.Any, temp_dir: str) -> None:
         allowed = {"pre", "post", "cmdline", "config_file", "name"}
-        required = set()
+        required = set()  # type: typing.Set[str]
         check_keys(allowed, required, config, type(self).__name__)
 
         self.config_file = config.get("config_file", {})
@@ -197,7 +221,9 @@ class MasterConfig(StageConfig):
         self.name = config.get("name", "master")
         self.temp_dir = temp_dir
 
-    def build_stage(self, poll, logger, state_machine):
+    def build_stage(
+        self, poll: "dc.Poll", logger: "dc.Logger", state_machine: "dc.StateMachine"
+    ) -> "dc.Stage":
         config_path = os.path.join(self.temp_dir, f"{self.name}.conf")
         with open(config_path, "w") as f:
             f.write(yaml.dump(self.config_file))
@@ -218,9 +244,9 @@ class MasterConfig(StageConfig):
 
 
 class AgentConfig(StageConfig):
-    def __init__(self, config, temp_dir):
+    def __init__(self, config: typing.Any, temp_dir: str) -> None:
         allowed = {"pre", "cmdline", "config_file", "name"}
-        required = set()
+        required = set()  # type: typing.Set[str]
         check_keys(allowed, required, config, type(self).__name__)
 
         self.config_file = config.get("config_file", {})
@@ -242,7 +268,9 @@ class AgentConfig(StageConfig):
         self.name = config.get("name", "agent")
         self.temp_dir = temp_dir
 
-    def build_stage(self, poll, logger, state_machine):
+    def build_stage(
+        self, poll: "dc.Poll", logger: "dc.Logger", state_machine: "dc.StateMachine"
+    ) -> "dc.Stage":
         config_path = os.path.join(self.temp_dir, f"{self.name}.conf")
         with open(config_path, "w") as f:
             f.write(yaml.dump(self.config_file))
@@ -254,8 +282,8 @@ class AgentConfig(StageConfig):
         return dc.Process(custom_config, poll, logger, state_machine)
 
 
-class ConnCheckConfig:
-    def __init__(self, config):
+class ConnCheckConfig(AtomicConfig):
+    def __init__(self, config: typing.Any) -> None:
         allowed = {"host", "port"}
         required = {"port"}
         check_keys(allowed, required, config, type(self).__name__)
@@ -263,12 +291,14 @@ class ConnCheckConfig:
         self.host = config.get("host", "localhost")
         self.port = config["port"]
 
-    def build_atomic(self, poll, logger, stream, report_fd):
+    def build_atomic(
+        self, poll: "dc.Poll", logger: "dc.Logger", stream: str, report_fd: int
+    ) -> "dc.AtomicOperation":
         return dc.ConnCheck(self.host, self.port, report_fd)
 
 
-class LogCheckConfig:
-    def __init__(self, config):
+class LogCheckConfig(AtomicConfig):
+    def __init__(self, config: typing.Any) -> None:
         allowed = {"regex", "stream"}
         required = {"regex"}
         check_keys(allowed, required, config, type(self).__name__)
@@ -279,32 +309,38 @@ class LogCheckConfig:
         # confirm that the regex is compilable
         re.compile(dc.asbytes(self.regex))
 
-    def build_atomic(self, poll, logger, stream, report_fd):
+    def build_atomic(
+        self, poll: "dc.Poll", logger: "dc.Logger", stream: str, report_fd: int
+    ) -> "dc.AtomicOperation":
         # Allow the configured stream to overwrite the default stream.
         s = stream if self.stream is None else self.stream
         return dc.LogCheck(logger, s, report_fd, self.regex)
 
 
-class CustomAtomicConfig:
-    def __init__(self, config):
+class CustomAtomicConfig(AtomicConfig):
+    def __init__(self, config: typing.Any) -> None:
         check_list_of_strings(config, "AtomicConfig.custom must be a list of strings")
         self.cmd = config
 
-    def build_atomic(self, poll, logger, stream, report_fd):
+    def build_atomic(
+        self, poll: "dc.Poll", logger: "dc.Logger", stream: str, report_fd: int
+    ) -> "dc.AtomicOperation":
         return dc.AtomicSubprocess(poll, logger, stream, report_fd, self.cmd)
 
 
-class ShellAtomicConfig:
-    def __init__(self, config):
+class ShellAtomicConfig(AtomicConfig):
+    def __init__(self, config: typing.Any) -> None:
         assert isinstance(config, str), "AtomicConfig.sh must be a single string"
         self.cmd = ["sh", "-c", config]
 
-    def build_atomic(self, poll, logger, stream, report_fd):
+    def build_atomic(
+        self, poll: "dc.Poll", logger: "dc.Logger", stream: str, report_fd: int
+    ) -> "dc.AtomicOperation":
         return dc.AtomicSubprocess(poll, logger, stream, report_fd, self.cmd)
 
 
 class CustomConfig(StageConfig):
-    def __init__(self, config):
+    def __init__(self, config: typing.Any) -> None:
         allowed = {"cmd", "name", "env", "cwd", "pre", "post"}
         required = {"cmd", "name"}
 
@@ -313,8 +349,7 @@ class CustomConfig(StageConfig):
         self.cmd = config["cmd"]
         check_list_of_strings(self.cmd, "CustomConfig.cmd must be a list of strings")
 
-        self.name = config["name"]
-        assert isinstance(self.name, str), "CustomConfig.name must be a string"
+        self.name = check_string(config["name"], "CustomConfig.name must be a string")
 
         self.env = config.get("env", {})
         check_dict_with_string_keys(
@@ -341,12 +376,14 @@ class CustomConfig(StageConfig):
         )
         self.post = [AtomicConfig.read(post) for post in config.get("post", [])]
 
-    def build_stage(self, poll, logger, state_machine):
+    def build_stage(
+        self, poll: "dc.Poll", logger: "dc.Logger", state_machine: "dc.StateMachine"
+    ) -> "dc.Stage":
         return dc.Process(self, poll, logger, state_machine)
 
 
 class CustomDockerConfig(StageConfig):
-    def __init__(self, config):
+    def __init__(self, config: typing.Any) -> None:
         allowed = {"name", "container_name", "run_args", "kill_signal", "pre", "post"}
         required = {"name", "container_name", "run_args"}
 
@@ -356,37 +393,39 @@ class CustomDockerConfig(StageConfig):
 
         self.run_args = config["run_args"]
         check_list_of_strings(
-            self.run_args, "CustomConfig.run_args must be a list of strings"
+            self.run_args, "CustomDockerConfig.run_args must be a list of strings"
         )
 
         self.kill_signal = config.get("kill_signal", "KILL")
         assert isinstance(
             self.kill_signal, str
-        ), "CustomConfig.kill_signal must be a string"
+        ), "CustomDockerConfig.kill_signal must be a string"
 
         self.name = config["name"]
-        assert isinstance(self.name, str), "CustomConfig.name must be a string"
+        assert isinstance(self.name, str), "CustomDockerConfig.name must be a string"
 
         check_list_of_dicts(
-            config.get("pre", []), "CustomConfig.pre must be a list of dicts"
+            config.get("pre", []), "CustomDockerConfig.pre must be a list of dicts"
         )
         self.pre = [AtomicConfig.read(pre) for pre in config.get("pre", [])]
 
         check_list_of_dicts(
-            config.get("post", []), "CustomConfig.post must be a list of dicts"
+            config.get("post", []), "CustomDockerConfig.post must be a list of dicts"
         )
         self.post = [AtomicConfig.read(post) for post in config.get("post", [])]
 
-    def build_stage(self, poll, logger, state_machine):
+    def build_stage(
+        self, poll: "dc.Poll", logger: "dc.Logger", state_machine: "dc.StateMachine"
+    ) -> "dc.Stage":
         return dc.DockerProcess(self, poll, logger, state_machine)
 
 
 class CommandConfig:
-    def __init__(self, command):
+    def __init__(self, command: str) -> None:
         self.command = command
 
     @staticmethod
-    def read(config):
+    def read(config: typing.Any) -> "CommandConfig":
         # allowable command configs:
         # commands:
         #   a: echo hello world
@@ -400,7 +439,7 @@ class CommandConfig:
 
 
 class Config:
-    def __init__(self, config):
+    def __init__(self, config: typing.Any) -> None:
         allowed = {"stages", "commands", "startup_input", "temp_dir", "cwd"}
         required = {"stages"}
         check_keys(allowed, required, config, type(self).__name__)
