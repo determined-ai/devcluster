@@ -105,6 +105,7 @@ def main():
     parser.add_argument("-C", "--cwd", dest="cwd", action="store")
     parser.add_argument("--no-guess-host", dest="no_guess_host", action="store_true")
     parser.add_argument("-l", "--listen", dest="listen", action="store_true")
+    parser.add_argument("--target-stage", type=str)
     parser.add_argument("addr", nargs="*")
     args = parser.parse_args()
 
@@ -215,7 +216,11 @@ def main():
             if not args.oneshot:
                 args.addr = [os.path.join(config.temp_dir, "sock")] + args.addr
             server = dc.Server(
-                config, args.addr, quiet=args.quiet, oneshot=args.oneshot
+                config,
+                args.addr,
+                quiet=args.quiet,
+                oneshot=args.oneshot,
+                initial_target_stage=args.target_stage,
             )
             server.run()
     elif mode == "client":
