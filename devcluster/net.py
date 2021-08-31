@@ -7,6 +7,7 @@ import traceback
 import signal
 import socket
 import sys
+from typing import Optional
 
 import devcluster as dc
 
@@ -142,7 +143,14 @@ class Connection:
 
 
 class Server:
-    def __init__(self, config, listeners, quiet=False, oneshot=False):
+    def __init__(
+        self,
+        config,
+        listeners,
+        quiet=False,
+        oneshot=False,
+        initial_target_stage: Optional[str] = None,
+    ):
         self.config = config
         self.poll = dc.Poll()
 
@@ -155,6 +163,18 @@ class Server:
             self.listeners[l.fileno()] = l
 
         self.stage_names = [stage_config.name for stage_config in config.stages]
+
+        self.initial_target_stage_idx = len(self.stage_names)
+        if initial_target_stage is not None:
+            if initial_target_stage not in self.stage_names:
+                raise ValueError(
+                    f"bad initial target stage: {initial_target_stage}. "
+                    f"available options: {self.stage_names}"
+                )
+
+            self.initial_target_stage_idx = (
+                self.stage_names.index(initial_target_stage) + 1
+            )
 
         self.logger = dc.Logger(self.stage_names, config.temp_dir)
         self.logger.add_callback(self.log_cb)
@@ -243,7 +263,7 @@ class Server:
                 # Draw the initial screen.
                 self.console.start()
 
-            self.state_machine.set_target(len(self.stage_names))
+            self.state_machine.set_target(self.initial_target_stage_idx)
 
             if self.console:
                 # TODO: handle startup_input without console
