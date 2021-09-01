@@ -45,7 +45,15 @@ def check_dict_with_string_keys(
     return d
 
 
-def read_path(path: str) -> str:
+def check_dict_of_strings(d: typing.Any, msg: str) -> typing.Dict[str, str]:
+    assert isinstance(d, dict), msg
+    for k, v in d.items():
+        assert isinstance(k, str), msg
+        assert isinstance(v, str), msg
+    return d
+
+
+def read_path(path: typing.Optional[str]) -> typing.Optional[str]:
     """Expand ~'s in a non-None path."""
     if path is None:
         return None
@@ -69,7 +77,7 @@ class StageConfig(metaclass=abc.ABCMeta):
 
     @staticmethod
     def read(config: typing.Any, temp_dir: str) -> "StageConfig":
-        allowed = {"db", "master", "agent", "custom", "custom_docker"}
+        allowed = {"elastic", "db", "master", "agent", "custom", "custom_docker"}
         # required = set()
 
         assert isinstance(
@@ -83,6 +91,8 @@ class StageConfig(metaclass=abc.ABCMeta):
             return CustomConfig(val)
         if typ == "custom_docker":
             return CustomDockerConfig(val)
+        elif typ == "elastic":
+            return ElasticConfig(val)
         elif typ == "db":
             return DBConfig(val)
         elif typ == "master":
@@ -128,6 +138,88 @@ class AtomicConfig(metaclass=abc.ABCMeta):
         pass
 
 
+class ElasticConfig(StageConfig):
+    """ElasticConfig is a canned stage that runs Elastic in docker"""
+
+    def __init__(self, config: typing.Any) -> None:
+        allowed = {
+            "name",
+            "api_port",
+            "elastic_port",
+            "environment",
+            "data_dir",
+            "container_name",
+            "image_name",
+            "cmdline",
+            "post",
+        }
+        required = set()  # type: typing.Set[str]
+        check_keys(allowed, required, config, type(self).__name__)
+
+        self.api_port = int(config.get("api_port", 9200))
+        self.elastic_port = int(config.get("elastic_port", 9300))
+
+        self.environment = check_dict_of_strings(
+            config.get(
+                "environment",
+                {
+                    "discovery.type": "single-node",
+                    "cluster.routing.allocation.disk.threshold_enabled": "false",
+                    "logger.level": "WARN",
+                },
+            ),
+            "ElasticConfig.environment must be a dict of strings to strings",
+        )
+        self.data_dir = read_path(config.get("data_dir"))
+        self.container_name = str(config.get("container_name", "determined_elastic"))
+        self.name = str(config.get("name", "elastic"))
+        self.image_name = str(config.get("image_name", "elasticsearch:7.14.0"))
+        self.post = config.get("post", [{"conncheck": {"port": 9200}}])
+
+        check_list_of_strings(
+            config.get("cmdline", []), "ElasticConfig.cmdline must be a list of strings"
+        )
+        self.cmdline = config.get("cmdline", [])
+
+    def build_stage(
+        self, poll: "dc.Poll", logger: "dc.Logger", state_machine: "dc.StateMachine"
+    ) -> "dc.Stage":
+
+        if self.data_dir:
+            # elastic is gonna have a bad day if this directory doesn't exist yet.
+            try:
+                os.makedirs(os.path.join(self.data_dir, "nodes"), exist_ok=True)
+            except Exception:
+                pass
+            run_args = ["-v", f"{self.data_dir}:/usr/share/elasticsearch/data"]
+        else:
+            run_args = []
+
+        for k, v in self.environment.items():
+            run_args += ["-e", f"{k}={v}"]
+
+        run_args += [
+            "-p",
+            f"{self.api_port}:9200",
+            "-p",
+            f"{self.elastic_port}:9300",
+            self.image_name,
+            *self.cmdline,
+        ]
+
+        custom_config = CustomDockerConfig(
+            {
+                "name": self.name,
+                "container_name": self.container_name,
+                "kill_signal": "TERM",
+                "run_args": run_args,
+                "post": self.post,
+            }
+        )
+
+        return dc.DockerProcess(custom_config, poll, logger, state_machine)
+
+
 class DBConfig(StageConfig):
     """DBConfig is a canned stage that runs the database in docker"""
 
@@ -141,6 +233,7 @@ class DBConfig(StageConfig):
             "container_name",
             "image_name",
             "cmdline",
+            "post",
         }
         required = set()  # type: typing.Set[str]
         check_keys(allowed, required, config, type(self).__name__)
@@ -152,6 +245,7 @@ class DBConfig(StageConfig):
         self.data_dir = read_path(config.get("data_dir"))
         self.name = str(config.get("name", "db"))
         self.image_name = str(config.get("image_name", "postgres:10.14"))
+        self.post = config.get("post", [{"logcheck": {"regex": "listening on IP"}}])
 
         check_list_of_strings(
             config.get("cmdline", []), "DBConfig.cmdline must be a list of strings"
@@ -180,13 +274,11 @@ class DBConfig(StageConfig):
 
         custom_config = CustomDockerConfig(
             {
-                "name": "db",
+                "name": self.name,
                 "container_name": self.container_name,
                 "kill_signal": "TERM",
                 "run_args": run_args,
-                "post": [
-                    {"logcheck": {"regex": "listening on IP"}},
-                ],
+                "post": self.post,
             }
         )
 

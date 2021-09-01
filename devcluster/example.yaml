@@ -33,13 +33,27 @@ commands:
   # " ": :marker  # spacebar
 
 # stages is the configuration of the whole cluster.  Each stage must be
-# completed before moving to the next stage, so order matters.  This example
-# assumes that devcluster.py is responsible for the database, but if you wanted
-# to run it externally then you could just remove the "db" stage here.
+# completed before moving to the next stage, so order matters.  If you want to
+# add an elastic stage, just uncomment the elastic stage (and configure the
+# master accordingly).
 stages:
 
-  # db is predefined type of stage specific to how determined runs the
-  # database.
+  # # elastic is a predefined type of stage for running elasticsearch.
+  # - elastic:
+  #     # container_name: determined_elastic
+  #     # image_name: elasticsearch:7.14.0
+  #     # api_port: 9200
+  #     # elastic_port: 9300
+  #     # environment:
+  #     #   discovery.type: "single-node"
+  #     #   cluster.routing.allocation.disk.threshold_enabled: "false"
+  #     #   logger.level: "WARN"
+
+  #     # data_dir is where the persistent files will be saved to.  If this key
+  #     # is not present, the elastic logs will not persist at all.
+  #     data_dir: ~/.elastic
+
+  # db is a predefined type of stage specific to how determined runs postgres.
   - db:
       # port: 5432
       # db_name: determined
@@ -94,6 +108,10 @@ stages:
         # This is important: we have to use the symbolic links in the
         # tools/build directory to run properly.
         root: tools/build
+        # logging:
+        #   type: elastic
+        #   host: 127.0.0.1
+        #   port: 9200
 
   - agent:
       # If you have multiple agent stages, they should have different names.
