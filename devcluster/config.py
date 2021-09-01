@@ -156,7 +156,7 @@ class DBConfig(StageConfig):
         check_list_of_strings(
             config.get("cmdline", []), "DBConfig.cmdline must be a list of strings"
         )
-        self.cmdline = config.get("cmdline", ["postgres", "-N", "10000"])
+        self.cmdline = config.get("cmdline", ["postgres"])
 
     def build_stage(
         self, poll: "dc.Poll", logger: "dc.Logger", state_machine: "dc.StateMachine"
@@ -235,7 +235,6 @@ class MasterConfig(StageConfig):
                 "cmd": cmd,
                 "name": self.name,
                 "pre": self.pre,
-                # TODO: don't hardcode 8080
                 "post": self.post,
             }
         )

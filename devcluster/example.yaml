@@ -46,7 +46,7 @@ stages:
       # password: postgres
       # container_name: determined_db
       # image_name: "postgres:10.14"
-      # cmdline: ["postgres", "-N", "10000"]
+      # cmdline: ["postgres"]
 
       # data_dir is where the persistent files will be saved to.  If this key
       # is not present, the database will not persist at all.
