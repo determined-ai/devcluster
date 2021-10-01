@@ -13,20 +13,21 @@ _save_cursor = None
 
 def tput(*args: str) -> bytes:
     cmd = ["tput", *args]
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    # We can't capture stderr because it causes tput to return incorrect result
+    # on macOS.
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE)
     out, err = p.communicate()
 
     if p.returncode != 0:
-        err_str = err.decode("utf-8").strip()
         err_msg = str(
             f"'{' '.join(cmd)}' exited non-zero({p.returncode}):\n"
-            f"stdout: '{out.decode('utf-8').strip()}'\nstderr: '{err_str}'\n"
+            f"stdout: '{out.decode('utf-8').strip()}'\n"
         )
-        if "unknown terminal" in err_str:
-            err_msg += str(
-                "If using a conda environment you may need to "
-                "'export TERMINFO=\"/usr/share/terminfo\"'"
-            )
+
+        err_msg += str(
+            "If using a conda environment you may need to "
+            "'export TERMINFO=\"/usr/share/terminfo\"'"
+        )
         raise RuntimeError(err_msg)
 
     return out.strip()
