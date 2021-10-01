@@ -75,6 +75,7 @@ stages:
         - sh: make -C proto build
         - sh: make -C master build
         - sh: make -C tools prep-root
+        - sh: mkdir -p /tmp/determined-cp
 
       # cmdline has the special property that the ":config" string will be
       # replaced with a temporary file containing the contents of the
@@ -101,8 +102,7 @@ stages:
           name: determined
         checkpoint_storage:
           type: shared_fs
-          host_path: /tmp
-          storage_path: determined-cp
+          host_path: /tmp/determined-cp
         log:
           level: debug
         # This is important: we have to use the symbolic links in the
