@@ -15,6 +15,7 @@ from devcluster.config import (
     CustomDockerConfig,
     AtomicConfig,
 )
+from devcluster.recovery import ProcessTracker
 from devcluster.devcluster import (
     Poll,
     Logger,
