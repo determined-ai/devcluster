@@ -95,7 +95,7 @@ class OneshotCB:
             os.write(sys.stderr.fileno(), b"devcluster is up\n")
 
         # Is the cluster failing?
-        if target != self.first_target and not self.failing:
+        if target.lower() == "dead" and not self.failing:
             self.failing = True
             os.write(sys.stderr.fileno(), b"devcluster is failing\n")
             self.quit_cb()

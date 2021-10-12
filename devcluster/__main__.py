@@ -142,8 +142,6 @@ def main() -> None:
         if args.oneshot and args.quiet:
             print("--oneshot and --quiet don't make sense together", file=sys.stderr)
             ok = False
-        if args.oneshot and args.addr:
-            print("--oneshot requires that no addresses are provided", file=sys.stderr)
 
     if not ok:
         sys.exit(1)
