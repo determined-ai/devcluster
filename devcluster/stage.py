@@ -15,6 +15,11 @@ class Stage:
     def running(self) -> bool:
         pass
 
+    @abc.abstractmethod
+    def crashed(self) -> bool:
+        """Return True if the Stage started but then died since the last .reset()."""
+        pass
+
     def killable(self) -> bool:
         """By default, killable() returns running().  It's more complex for docker"""
         return self.running()
@@ -55,6 +60,9 @@ class DeadStage(Stage):
 
     def running(self) -> bool:
         return self._running
+
+    def crashed(self) -> bool:
+        return False
 
     def kill(self) -> None:
         self._running = False
@@ -105,6 +113,7 @@ class BaseProcess(Stage, metaclass=abc.ABCMeta):
     def reset(self) -> None:
         self.precmds_run = 0
         self.postcmds_run = 0
+        self._crashed = False
 
     @abc.abstractmethod
     def wait(self) -> int:
@@ -114,8 +123,8 @@ class BaseProcess(Stage, metaclass=abc.ABCMeta):
         """wait() on proc if both stdout and stderr are empty."""
         if not self.dying:
             self.logger.log(f"{self.log_name()} closing unexpectedly!\n")
-            # TODO: don't always go to dead state
-            self.state_machine.set_target(0)
+            self._crashed = True
+            self.state_machine.report_crash()
 
         if self.out is None and self.err is None:
             ret = self.wait()
@@ -124,7 +133,6 @@ class BaseProcess(Stage, metaclass=abc.ABCMeta):
                 f" ----- {self.log_name()} exited with {ret} -----\n", self.log_name()
             )
             self.proc = None
-            self.reset()
             self.state_machine.next_thing()
 
     def _handle_out(self, ev: int, _: int) -> None:
@@ -175,6 +183,9 @@ class BaseProcess(Stage, metaclass=abc.ABCMeta):
 
     def running(self) -> bool:
         return self.proc is not None
+
+    def crashed(self) -> bool:
+        return self._crashed
 
     def log_name(self) -> str:
         return self.name
@@ -416,5 +427,4 @@ class DockerProcess(BaseProcess):
         # doesn't block.
         if self.proc is None:
             self.docker_wait()
-            self.reset()
             self.state_machine.next_thing()
