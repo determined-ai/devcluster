@@ -85,17 +85,22 @@ class OneshotCB:
         self.failing = False
         self.quit_cb = quit_cb
 
-    def state_cb(self, state: str, substate: str, target: str) -> None:
+    def state_cb(
+        self, state: str, substate: str, target: str, crashes: typing.Sequence[bool]
+    ) -> None:
+        if self.failing:
+            return
+
         if self.first_target is None:
             self.first_target = target
 
-        # Did we reach the target stat?
+        # Did we reach the target state?
         if state == self.first_target and substate == "" and not self.up:
             self.up = True
             os.write(sys.stderr.fileno(), b"devcluster is up\n")
 
-        # Is the cluster failing?
-        if target != self.first_target and not self.failing:
+        # Did a stage fail to start, or did a previously-up stage crash?
+        if target != self.first_target or any(crashes):
             self.failing = True
             os.write(sys.stderr.fileno(), b"devcluster is failing\n")
             self.quit_cb()
@@ -334,9 +339,11 @@ class Server:
         for client in self.clients:
             client.write(jmsg)
 
-    def state_machine_cb(self, state: str, atomic: str, target: str) -> None:
+    def state_machine_cb(
+        self, state: str, atomic: str, target: str, crashes: typing.Sequence[bool]
+    ) -> None:
         # the server listens to state machine callbacks and broadcasts them to all clients
-        jmsg = {"state_cb": [state, atomic, target]}
+        jmsg = {"state_cb": [state, atomic, target, crashes]}
         for client in self.clients:
             client.write(jmsg)
 

@@ -245,10 +245,9 @@ class Command:
         self.end_cb(self)
 
 
-# StateCB args are: state_str, atomic_str, target_str
-StateCB = typing.Callable[[str, str, str], None]
+# StateCB args are: state_str, atomic_str, target_str, crash_mask
+StateCB = typing.Callable[[str, str, str, typing.Sequence[bool]], None]
 ReportCB = typing.Callable[[], None]
-StateMachineStatus = typing.Tuple[int, typing.Optional["dc.AtomicOperation"], int]
 
 
 class StateMachine:
@@ -275,14 +274,12 @@ class StateMachine:
         poll.register(self.pipe_rd, Poll.IN_FLAGS, self.handle_pipe)
 
         self.stages = [dc.DeadStage(self)]  # type: typing.List[dc.Stage]
+        # state is the current stage we are running
         self.state = 0
+        # target is the stage the user has requested we run
         self.target = 0
 
-        self.old_status = (
-            self.state,
-            self.atomic_op,
-            self.target,
-        )  # type: StateMachineStatus
+        self.old_status = None  # type: typing.Any
 
         self.callbacks = []  # type: typing.List[StateCB]
 
@@ -345,6 +342,10 @@ class StateMachine:
         if self.state < 0:
             return
 
+        # nothing to do if this stage has crashed
+        if self.stages[self.state].crashed():
+            return
+
         process = self.stages[self.state]
         # Is there another precommand?
         atomic_op = process.get_precommand()
@@ -367,6 +368,7 @@ class StateMachine:
           - a new transition is set
           - an atomic operation completes
           - a long-running process is closed
+          - a stage has crashed
         """
 
         # Possibly further some atomic operations in the current state.
@@ -376,7 +378,9 @@ class StateMachine:
         # Advance state?
         elif self.state < self.target:
             self.advance_stage()
-            if self.atomic_op is None:
+            if self.atomic_op is None and not any(
+                stage.crashed() for stage in self.stages
+            ):
                 self.transition(self.state + 1)
 
         # Regress state.
@@ -392,11 +396,12 @@ class StateMachine:
                     self.transition(self.state - 1)
 
         # Notify changes of state.
-        new_status = (self.state, self.atomic_op, self.target)
+        crashed = tuple(stage.crashed() for stage in self.stages)
+        new_status = (self.state, self.atomic_op, self.target, crashed)
         if self.old_status != new_status:
             state_str, atomic_str, target_str = self.gen_state_cb()
             for cb in self.callbacks:
-                cb(state_str, atomic_str, target_str)
+                cb(state_str, atomic_str, target_str, crashed)
 
             self.old_status = new_status
 
@@ -413,6 +418,9 @@ class StateMachine:
 
         self.target = target
 
+        self.next_thing()
+
+    def report_crash(self) -> None:
         self.next_thing()
 
     def quit(self) -> None:
@@ -502,7 +510,7 @@ class Console:
         self.run_command_cb = run_command_cb
         self.quit_cb = quit_cb
 
-        self.status = ("state", "substate", "target")
+        self.status = ("state", "substate", "target", [False for _ in self.stages])
 
         # default to all streams active
         self.active_streams = set(self.logger.streams)
@@ -527,8 +535,10 @@ class Console:
             else:
                 self.print_bar(msg)
 
-    def state_cb(self, state: str, substate: str, target: str) -> None:
-        self.status = (state, substate, target)
+    def state_cb(
+        self, state: str, substate: str, target: str, crashes: typing.Sequence[bool]
+    ) -> None:
+        self.status = (state, substate, target, list(crashes))
         self.print_bar()
 
     def redraw(self) -> None:
@@ -737,7 +747,7 @@ class Console:
 
     def print_bar(self, prebar_bytes: bytes = b"") -> None:
         cols = get_cols()
-        state, _, target = self.status
+        state, _, target, crashes = self.status
 
         # When change_scroll_region is available, we only write the bar when we have to modify it.
         new_bar_state = (
@@ -745,6 +755,7 @@ class Console:
             get_rows(),
             state,
             target,
+            tuple(crashes),
             tuple(self.active_streams),
         )
         if dc.has_csr() and self.last_bar_state == new_bar_state:
@@ -755,6 +766,7 @@ class Console:
 
         blue = fore_num(202) + back_num(17)
         orange = fore_num(17) + back_num(202)
+        red = fore_num(16) + back_num(1)
 
         bar1 = b"state: "
         # printable length
@@ -766,7 +778,7 @@ class Console:
         else:
             colors = [blue] * len(self.stages)
             for i in range(1, len(self.stages)):
-                colors[i] = orange
+                colors[i] = red if crashes[i] else orange
                 if self.stages[i].lower() == state.lower():
                     break
 
