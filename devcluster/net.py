@@ -223,14 +223,18 @@ class Server:
             # Don't use a Console.
             self.console = None
         else:
+            state_machine_handle = dc.StateMachineHandle(
+                self.state_machine.set_target_or_restart,
+                self.state_machine.run_command,
+                self.state_machine.quit,
+                self.state_machine.dump_state,
+            )
             self.console = dc.Console(
                 self.logger,
                 self.poll,
                 self.stage_names,
-                self.state_machine.set_target,
                 config.commands,
-                self.state_machine.run_command,
-                self.state_machine.quit,
+                state_machine_handle,
             )
             self.state_machine.add_callback(self.console.state_cb)
 
@@ -328,8 +332,8 @@ class Server:
 
     def jmsg_cb(self, jmsg: Jmsg) -> None:
         for k, v in jmsg.items():
-            if k == "set_target":
-                self.state_machine.set_target(v)
+            if k == "set_target_or_restart":
+                self.state_machine.set_target_or_restart(v)
             elif k == "run_cmd":
                 self.state_machine.run_command(v)
             elif k == "quit":
@@ -379,14 +383,18 @@ class Client:
         self.logger = dc.Logger(
             init["stages"], None, init["logger_streams"], init["logger_index"]
         )
+        state_machine_handle = dc.StateMachineHandle(
+            self.set_target_or_restart,
+            self.run_command,
+            self.quit,
+            self.dump_state,
+        )
         self.console = dc.Console(
             self.logger,
             self.poll,
             init["stages"],
-            self.set_target,
             init["command_configs"],
-            self.run_command,
-            self.quit,
+            state_machine_handle,
         )
 
         self.server = Connection(
@@ -461,11 +469,14 @@ class Client:
     def server_conn_close_cb(self, server_conn: Connection) -> None:
         raise ValueError("Connection to server closed")
 
-    def set_target(self, idx: int) -> None:
-        self.server.write({"set_target": idx})
+    def set_target_or_restart(self, idx: int) -> None:
+        self.server.write({"set_target_or_restart": idx})
 
     def run_command(self, cmdstr: str) -> None:
         self.server.write({"run_cmd": cmdstr})
 
     def quit(self) -> None:
         self.keep_going = False
+
+    def dump_state(self) -> None:
+        self.server.write({"dump_state": None})

@@ -20,6 +20,7 @@ from devcluster.devcluster import (
     Poll,
     Logger,
     StateMachine,
+    StateMachineHandle,
     Console,
 )
 from devcluster.atomic import (

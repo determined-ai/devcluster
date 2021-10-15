@@ -1,3 +1,4 @@
+import json
 import os
 import time
 import select
@@ -278,6 +279,15 @@ class StateMachine:
         self.state = 0
         # target is the stage the user has requested we run
         self.target = 0
+        # standing_up is the stage we are standing up (there is only one at a time)
+        self.standing_up = None  # type: typing.Optional[int]
+
+        # While a Stage can track if it has crashed(), only the StateMachine knows if an
+        # AtomicOp for a stage has failed.  We track that per-stage.
+        self.atomic_crashed = [False]
+
+        # we queue up restart requests to handle them one at a time.
+        self.want_restarts = []  # type: typing.List[int]
 
         self.old_status = None  # type: typing.Any
 
@@ -287,6 +297,26 @@ class StateMachine:
 
         # commands maps the UI key to the command
         self.commands = {}  # type: typing.Dict[str, Command]
+
+    def dump_state(self) -> None:
+        """Useful for debugging the state machine if the state machine deadlocks."""
+        state = {
+            "state": self.state,
+            "target": self.target,
+            "standing_up": self.standing_up,
+            "atomic_op": self.atomic_op and str(self.atomic_op),
+            "stages": [
+                {
+                    "name": stage.log_name(),
+                    "killable": stage.killable(),
+                    "running": stage.running(),
+                    "crashed": stage.crashed(),
+                    "atomic_crashed": self.atomic_crashed[i],
+                }
+                for i, stage in enumerate(self.stages)
+            ],
+        }
+        self.logger.log("state_machine: " + json.dumps(state, indent="  ") + "\n")
 
     def run_command(self, cmd_str: str) -> None:
         if self.quitting:
@@ -320,6 +350,7 @@ class StateMachine:
 
     def add_stage(self, stage: "dc.Stage") -> None:
         self.stages.append(stage)
+        self.atomic_crashed.append(False)
 
     def add_callback(self, cb: StateCB) -> None:
         self.callbacks.append(cb)
@@ -327,26 +358,31 @@ class StateMachine:
     def add_report_callback(self, report_msg: str, cb: ReportCB) -> None:
         self.report_callbacks[report_msg] = cb
 
-    def advance_stage(self) -> None:
+    def is_crashed(self, stage_id: int) -> bool:
+        """
+        Logical OR of the crash information tracked by each Stage
+        with the AtomicOp crash information that we track here.
+        """
+        return self.stages[stage_id].crashed() or self.atomic_crashed[stage_id]
+
+    def advance_stage(self, stage_id: int) -> None:
         """
         Either:
           - start the next precommand,
           - start the real command (and maybe a postcommand), or
           - start the next postcommand
         """
+        if self.is_crashed(stage_id):
+            if self.atomic_op is not None:
+                # Cancel any pending atomic ops.
+                self.atomic_op.cancel()
+            return
+
         # Never do anything if there is an atomic operation to finish.
         if self.atomic_op is not None:
             return
 
-        # nothing to do in the dead state
-        if self.state < 0:
-            return
-
-        # nothing to do if this stage has crashed
-        if self.stages[self.state].crashed():
-            return
-
-        process = self.stages[self.state]
+        process = self.stages[stage_id]
         # Is there another precommand?
         atomic_op = process.get_precommand()
         if atomic_op is not None:
@@ -365,51 +401,105 @@ class StateMachine:
     def next_thing(self) -> None:
         """
         Should be called either when:
-          - a new transition is set
           - an atomic operation completes
           - a long-running process is closed
           - a stage has crashed
         """
 
-        # Possibly further some atomic operations in the current state.
-        if self.state == self.target:
-            self.advance_stage()
+        while True:
+            # Execute any stages that we are currently in the process of standing up.
+            if self.standing_up is not None:
+                # If standing_up won't be running when we reach the target state, cancel it.
+                if self.standing_up > self.target:
+                    if self.atomic_op is None:
+                        # Safe to cancel further work for this stage.
+                        self.standing_up = None
+                        # Check for more work.
+                        continue
+                    else:
+                        self.atomic_op.cancel()
+                else:
+                    self.advance_stage(self.standing_up)
+                    if self.atomic_op is None:
+                        # Done standing up this stage.
+                        self.standing_up = None
+                        # Check for more work.
+                        continue
 
-        # Advance state?
-        elif self.state < self.target:
-            self.advance_stage()
-            if self.atomic_op is None and not any(
-                stage.crashed() for stage in self.stages
-            ):
-                self.transition(self.state + 1)
-
-        # Regress state.
-        elif self.state > self.target:
-            # Cancel any atomic operations first.
-            if self.atomic_op is not None:
-                self.atomic_op.cancel()
-            else:
+            # Regress state.
+            elif self.state > self.target:
+                # Do we need to kill the stage?
                 if self.stages[self.state].killable():
                     self.stages[self.state].kill()
-                else:
+                # Is it done running? (though usually if it was killable it won't be yet)
+                if not self.stages[self.state].running():
                     self.stages[self.state].reset()
-                    self.transition(self.state - 1)
+                    self.atomic_crashed[self.state] = False
+                    self.state -= 1
+                    # Check for more work.
+                    continue
+
+            # Check for any pending restarts.
+            elif self.want_restarts:
+                want_restart = self.want_restarts[0]
+                if self.stages[want_restart].running():
+                    # Need to shut down before restarting.
+                    # This arises if a postcmd has failed but the stage kept running.
+                    if self.stages[self.state].killable():
+                        self.stages[self.state].kill()
+                else:
+                    self.stages[want_restart].reset()
+                    self.atomic_crashed[want_restart] = False
+                    self.standing_up = want_restart
+                    self.want_restarts.pop(0)
+                    # Start executing on this restart.
+                    continue
+
+            # Advance state.
+            elif self.state < self.target:
+                # Only advance automatically if there are no detected crashes.
+                if not any(self.is_crashed(i) for i in range(len(self.stages))):
+                    self.state += 1
+                    self.standing_up = self.state
+                    # Check for more work.
+                    continue
+
+            # exiting the loop is the "normal" behavior
+            break
 
         # Notify changes of state.
-        crashed = tuple(stage.crashed() for stage in self.stages)
+        crashed = tuple(self.is_crashed(i) for i in range(len(self.stages)))
         new_status = (self.state, self.atomic_op, self.target, crashed)
         if self.old_status != new_status:
-            state_str, atomic_str, target_str = self.gen_state_cb()
+            state_str, atomic_str, target_str, crashed = self.gen_state_cb()
             for cb in self.callbacks:
                 cb(state_str, atomic_str, target_str, crashed)
 
             self.old_status = new_status
 
-    def gen_state_cb(self) -> typing.Tuple[str, str, str]:
+    def gen_state_cb(self) -> typing.Tuple[str, str, str, typing.Tuple[bool, ...]]:
         state_str = self.stages[self.state].log_name().upper()
         atomic_str = str(self.atomic_op) if self.atomic_op else ""
         target_str = self.stages[self.target].log_name().upper()
-        return state_str, atomic_str, target_str
+        crashed = tuple(self.is_crashed(i) for i in range(len(self.stages)))
+        return state_str, atomic_str, target_str, crashed
+
+    def set_target_or_restart(self, target: int) -> None:
+        """
+        The UI reacts differently to keys based on if the stage is crashed, but
+        the UI can't actually read the crash state to distinguish key inputs
+        without a race condition, so that decision is made here.
+        """
+        if target < len(self.stages) and self.is_crashed(target):
+            self.restart_stage(target)
+        else:
+            self.set_target(target)
+
+    def restart_stage(self, target: int) -> None:
+        if not self.is_crashed(target):
+            raise ValueError(f"stage[{target}] is not crashed, and so cannot restart")
+        self.want_restarts.append(target)
+        self.next_thing()
 
     def set_target(self, target: int) -> None:
         """For when you choose a new target state."""
@@ -454,8 +544,9 @@ class StateMachine:
                 self.atomic_op.join()
                 self.atomic_op = None
                 if c == "F":  # Fail
-                    # set the target state to be one less than wherever-we-are
-                    self.target = min(self.state - 1, self.target)
+                    # Mark this atomic as crashed.
+                    assert self.standing_up is not None
+                    self.atomic_crashed[self.standing_up] = True
 
                 self.next_thing()
             return
@@ -487,16 +578,32 @@ def back_num(num: int) -> bytes:
 res = b"\x1b[m"
 
 
+class StateMachineHandle:
+    """
+    The StateMachine maybe be exposed to the Console directly, or over the network.
+    """
+
+    def __init__(
+        self,
+        set_target_or_restart: typing.Callable[[int], None],
+        run_command: typing.Callable[[str], None],
+        quit_cb: typing.Callable[[], None],
+        dump_state: typing.Callable[[], None],
+    ):
+        self.set_target_or_restart = set_target_or_restart
+        self.run_command = run_command
+        self.quit = quit_cb
+        self.dump_state = dump_state
+
+
 class Console:
     def __init__(
         self,
         logger: Logger,
         poll: Poll,
         stages: typing.List[str],
-        set_target_cb: typing.Callable[[int], None],
         command_configs: typing.Dict[str, dc.CommandConfig],
-        run_command_cb: typing.Callable[[str], None],
-        quit_cb: typing.Callable[[], None],
+        state_machine_handle: StateMachineHandle,
     ):
         self.logger = logger
         self.logger.add_callback(self.log_cb)
@@ -505,10 +612,8 @@ class Console:
         self.poll.register(sys.stdin.fileno(), Poll.IN_FLAGS, self.handle_stdin)
 
         self.stages = ["dead"] + stages
-        self.set_target_cb = set_target_cb
         self.command_configs = command_configs
-        self.run_command_cb = run_command_cb
-        self.quit_cb = quit_cb
+        self.state_machine_handle = state_machine_handle
 
         self.status = ("state", "substate", "target", [False for _ in self.stages])
 
@@ -606,7 +711,7 @@ class Console:
     def try_set_target(self, idx: int) -> None:
         if idx >= len(self.stages):
             return
-        self.set_target_cb(idx)
+        self.state_machine_handle.set_target_or_restart(idx)
 
     def try_toggle_stream(self, idx: int) -> None:
         if idx not in self.logger.index:
@@ -682,11 +787,11 @@ class Console:
         elif key in self.command_configs:
             cmdstr = self.command_configs[key].command
             if not cmdstr.startswith(":"):
-                self.run_command_cb(cmdstr)
+                self.state_machine_handle.run_command(cmdstr)
             else:
                 # Console action.
                 if cmdstr == ":quit":
-                    self.quit_cb()
+                    self.state_machine_handle.quit()
                 elif cmdstr == ":scroll-up":
                     self.act_scroll(1)
                 elif cmdstr == ":scroll-up-10":
@@ -709,10 +814,12 @@ class Console:
                     )
 
         # Default keybindings
-        elif key == "\x03":
-            self.quit_cb()
+        elif key == "\x03":  # ctrl-c
+            self.state_machine_handle.quit()
+        elif key == "\x04":  # ctrl-d
+            self.state_machine_handle.dump_state()
         elif key == "q":
-            self.quit_cb()
+            self.state_machine_handle.quit()
         elif key == "k":
             self.act_scroll(1)
         elif key == "u":
