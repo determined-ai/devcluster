@@ -125,6 +125,10 @@ class LogCheck(AtomicOperation):
         self.logger.remove_callback(self.log_cb)
 
 
+# AtomicCB(success: bool, stdout: bytes) -> None
+AtomicCB = typing.Callable[[bool, bytes], None]
+
+
 class AtomicSubprocess(AtomicOperation):
     def __init__(
         self,
@@ -134,13 +138,15 @@ class AtomicSubprocess(AtomicOperation):
         report_fd: int,
         cmd: typing.List[str],
         quiet: bool = False,
-        callbacks: typing.Iterable[typing.Callable[[bool], None]] = (),
+        callbacks: typing.Sequence[AtomicCB] = (),
     ) -> None:
         self.poll = poll
         self.logger = logger
         self.stream = stream
         self.report_fd = report_fd
+        self.quiet = quiet
         self.callbacks = callbacks
+        self.captured_stdout = []  # type: typing.List[bytes]
 
         self.start_time = time.time()
 
@@ -148,13 +154,11 @@ class AtomicSubprocess(AtomicOperation):
         self.proc = subprocess.Popen(
             cmd,
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL if quiet else subprocess.PIPE,
+            stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )  # type: typing.Optional[subprocess.Popen]
-        self.out = None
-        if not quiet:
-            assert self.proc.stdout
-            self.out = self.proc.stdout.fileno()
+        assert self.proc.stdout
+        self.out = self.proc.stdout.fileno()  # type: typing.Optional[int]
         assert self.proc.stderr
         self.err = self.proc.stderr.fileno()  # type: typing.Optional[int]
 
@@ -190,14 +194,17 @@ class AtomicSubprocess(AtomicOperation):
                 success = True
 
             for cb in self.callbacks:
-                cb(success)
+                cb(success, b"".join(self.captured_stdout))
 
             os.write(self.report_fd, b"S" if success else b"F")
 
     def _handle_out(self, ev: int, _: int) -> None:
         assert self.out
         if ev & dc.Poll.IN_FLAGS:
-            self.logger.log(os.read(self.out, 4096), self.stream)
+            chunk = os.read(self.out, 4096)
+            if not self.quiet:
+                self.logger.log(chunk, self.stream)
+            self.captured_stdout.append(chunk)
         if ev & dc.Poll.ERR_FLAGS:
             self.poll.unregister(self._handle_out)
             os.close(self.out)

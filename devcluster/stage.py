@@ -202,15 +202,19 @@ class Process(BaseProcess):
         poll: dc.Poll,
         logger: dc.Logger,
         state_machine: dc.StateMachine,
+        process_tracker: dc.ProcessTracker,
     ) -> None:
         super().__init__(
             poll, logger, state_machine, config.name, config.pre, config.post
         )
+        self.process_tracker = process_tracker
         self.config = config
 
     def wait(self) -> int:
         assert self.proc
-        return self.proc.wait()
+        out = self.proc.wait()
+        self.process_tracker.report_pid_killed(self.proc.pid)
+        return out
 
     def run_command(self) -> None:
         self.dying = False
@@ -237,6 +241,10 @@ class Process(BaseProcess):
         self.poll.register(self.out, dc.Poll.IN_FLAGS, self._handle_out)
         self.poll.register(self.err, dc.Poll.IN_FLAGS, self._handle_err)
 
+        self.process_tracker.report_pid_started(
+            self.proc.pid, " ".join(self.config.cmd)
+        )
+
     def kill(self) -> None:
         # kill via signal
         self.dying = True
@@ -255,11 +263,14 @@ class DockerProcess(BaseProcess):
         poll: dc.Poll,
         logger: dc.Logger,
         state_machine: dc.StateMachine,
+        process_tracker: dc.ProcessTracker,
     ) -> None:
         super().__init__(
             poll, logger, state_machine, config.name, config.pre, config.post
         )
+        self.process_tracker = process_tracker
         self.config = config
+        self.container_id = ""
 
         # docker run --detach has to be an AtomicOperation because it is way too slow and causes
         # the UI to hang.  This has far-reaching implications, since `running()` is not longer
@@ -267,14 +278,11 @@ class DockerProcess(BaseProcess):
         # main subprocess hasn't even been launched.
         self.docker_started = False
 
-    def after_container_start(self, success: bool) -> None:
+    def after_container_start(self, success: bool, stdout: bytes) -> None:
         self.docker_started = success
-        if not success:
-            self.logger.log(
-                "failed to start a docker container, possibly try:\n\n"
-                f"    docker kill {self.config.container_name}; "
-                f"docker container rm {self.config.container_name}\n\n"
-            )
+        if success:
+            self.container_id = stdout.strip().decode("utf8")
+            self.process_tracker.report_container_started(self.container_id)
 
     def get_precommand(self) -> typing.Optional[dc.AtomicOperation]:
         # Inherit the precmds behavior from Process.
@@ -328,6 +336,8 @@ class DockerProcess(BaseProcess):
         self.poll.register(self.out, dc.Poll.IN_FLAGS, self._handle_out)
         self.poll.register(self.err, dc.Poll.IN_FLAGS, self._handle_err)
 
+        self.process_tracker.report_pid_started(self.proc.pid, "docker container logs")
+
     def docker_wait(self) -> int:
         # Wait for the container.
         self.docker_started = False
@@ -370,6 +380,7 @@ class DockerProcess(BaseProcess):
             stderr=subprocess.PIPE,
         )
         assert p.stderr
+
         err = p.stderr.read()
         ret = p.wait()
         if ret != 0:
@@ -383,6 +394,8 @@ class DockerProcess(BaseProcess):
                 f" ----- `docker container rm` for {self.log_name()} exited with {ret} -----\n",
                 self.log_name(),
             )
+        else:
+            self.process_tracker.report_container_killed(self.container_id)
 
         return docker_exit_val
 
@@ -397,6 +410,8 @@ class DockerProcess(BaseProcess):
                 f" ----- `docker container logs` for {self.log_name()} exited with {ret} -----\n",
                 self.log_name(),
             )
+
+        self.process_tracker.report_pid_killed(self.proc.pid)
 
         return self.docker_wait()
 

@@ -103,7 +103,11 @@ class StageConfig(metaclass=abc.ABCMeta):
 
     @abc.abstractmethod
     def build_stage(
-        self, poll: "dc.Poll", logger: "dc.Logger", state_machine: "dc.StateMachine"
+        self,
+        poll: "dc.Poll",
+        logger: "dc.Logger",
+        state_machine: "dc.StateMachine",
+        process_tracker: "dc.ProcessTracker",
     ) -> "dc.Stage":
         pass
 
@@ -182,7 +186,11 @@ class ElasticConfig(StageConfig):
         self.cmdline = config.get("cmdline", [])
 
     def build_stage(
-        self, poll: "dc.Poll", logger: "dc.Logger", state_machine: "dc.StateMachine"
+        self,
+        poll: "dc.Poll",
+        logger: "dc.Logger",
+        state_machine: "dc.StateMachine",
+        process_tracker: "dc.ProcessTracker",
     ) -> "dc.Stage":
 
         if self.data_dir:
@@ -217,7 +225,9 @@ class ElasticConfig(StageConfig):
             }
         )
 
-        return dc.DockerProcess(custom_config, poll, logger, state_machine)
+        return dc.DockerProcess(
+            custom_config, poll, logger, state_machine, process_tracker
+        )
 
 
 class DBConfig(StageConfig):
@@ -253,7 +263,11 @@ class DBConfig(StageConfig):
         self.cmdline = config.get("cmdline", ["postgres"])
 
     def build_stage(
-        self, poll: "dc.Poll", logger: "dc.Logger", state_machine: "dc.StateMachine"
+        self,
+        poll: "dc.Poll",
+        logger: "dc.Logger",
+        state_machine: "dc.StateMachine",
+        process_tracker: "dc.ProcessTracker",
     ) -> "dc.Stage":
 
         if self.data_dir:
@@ -282,7 +296,9 @@ class DBConfig(StageConfig):
             }
         )
 
-        return dc.DockerProcess(custom_config, poll, logger, state_machine)
+        return dc.DockerProcess(
+            custom_config, poll, logger, state_machine, process_tracker
+        )
 
 
 class MasterConfig(StageConfig):
@@ -314,7 +330,11 @@ class MasterConfig(StageConfig):
         self.temp_dir = temp_dir
 
     def build_stage(
-        self, poll: "dc.Poll", logger: "dc.Logger", state_machine: "dc.StateMachine"
+        self,
+        poll: "dc.Poll",
+        logger: "dc.Logger",
+        state_machine: "dc.StateMachine",
+        process_tracker: "dc.ProcessTracker",
     ) -> "dc.Stage":
         config_path = os.path.join(self.temp_dir, f"{self.name}.conf")
         with open(config_path, "w") as f:
@@ -331,7 +351,7 @@ class MasterConfig(StageConfig):
             }
         )
 
-        return dc.Process(custom_config, poll, logger, state_machine)
+        return dc.Process(custom_config, poll, logger, state_machine, process_tracker)
 
 
 class AgentConfig(StageConfig):
@@ -360,7 +380,11 @@ class AgentConfig(StageConfig):
         self.temp_dir = temp_dir
 
     def build_stage(
-        self, poll: "dc.Poll", logger: "dc.Logger", state_machine: "dc.StateMachine"
+        self,
+        poll: "dc.Poll",
+        logger: "dc.Logger",
+        state_machine: "dc.StateMachine",
+        process_tracker: "dc.ProcessTracker",
     ) -> "dc.Stage":
         config_path = os.path.join(self.temp_dir, f"{self.name}.conf")
         with open(config_path, "w") as f:
@@ -370,7 +394,7 @@ class AgentConfig(StageConfig):
 
         custom_config = CustomConfig({"cmd": cmd, "name": self.name, "pre": self.pre})
 
-        return dc.Process(custom_config, poll, logger, state_machine)
+        return dc.Process(custom_config, poll, logger, state_machine, process_tracker)
 
 
 class ConnCheckConfig(AtomicConfig):
@@ -468,9 +492,13 @@ class CustomConfig(StageConfig):
         self.post = [AtomicConfig.read(post) for post in config.get("post", [])]
 
     def build_stage(
-        self, poll: "dc.Poll", logger: "dc.Logger", state_machine: "dc.StateMachine"
+        self,
+        poll: "dc.Poll",
+        logger: "dc.Logger",
+        state_machine: "dc.StateMachine",
+        process_tracker: "dc.ProcessTracker",
     ) -> "dc.Stage":
-        return dc.Process(self, poll, logger, state_machine)
+        return dc.Process(self, poll, logger, state_machine, process_tracker)
 
 
 class CustomDockerConfig(StageConfig):
@@ -506,9 +534,13 @@ class CustomDockerConfig(StageConfig):
         self.post = [AtomicConfig.read(post) for post in config.get("post", [])]
 
     def build_stage(
-        self, poll: "dc.Poll", logger: "dc.Logger", state_machine: "dc.StateMachine"
+        self,
+        poll: "dc.Poll",
+        logger: "dc.Logger",
+        state_machine: "dc.StateMachine",
+        process_tracker: "dc.ProcessTracker",
     ) -> "dc.Stage":
-        return dc.DockerProcess(self, poll, logger, state_machine)
+        return dc.DockerProcess(self, poll, logger, state_machine, process_tracker)
 
 
 class CommandConfig:

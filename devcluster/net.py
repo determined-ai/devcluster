@@ -182,6 +182,7 @@ class Server:
 
         # map of fd's to socket objects
         self.listeners = {}
+        self.clients = set()  # type: typing.Set[Connection]
 
         for spec in listeners:
             l = listener_from_spec(spec)
@@ -208,9 +209,14 @@ class Server:
         self.state_machine = dc.StateMachine(self.logger, self.poll, config.commands)
         self.state_machine.add_callback(self.state_machine_cb)
 
+        self.process_tracker = dc.ProcessTracker(config.temp_dir)
+        self.process_tracker.recover(self.logger)
+
         for stage_config in config.stages:
             self.state_machine.add_stage(
-                stage_config.build_stage(self.poll, self.logger, self.state_machine)
+                stage_config.build_stage(
+                    self.poll, self.logger, self.state_machine, self.process_tracker
+                )
             )
 
         if quiet or oneshot:
@@ -251,8 +257,6 @@ class Server:
             self.state_machine.add_callback(oneshot_cb.state_cb)
 
             self.logger.add_callback(oneshot_cb.log_cb)
-
-        self.clients = set()  # type: typing.Set[Connection]
 
         self.command_config = config.commands
 
