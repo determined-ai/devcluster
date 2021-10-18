@@ -1,5 +1,6 @@
 import abc
 import os
+import signal
 import subprocess
 import typing
 
@@ -25,7 +26,7 @@ class Stage:
         return self.running()
 
     @abc.abstractmethod
-    def kill(self) -> None:
+    def kill(self, sig: typing.Optional[signal.Signals] = None) -> None:
         pass
 
     @abc.abstractmethod
@@ -64,7 +65,7 @@ class DeadStage(Stage):
     def crashed(self) -> bool:
         return False
 
-    def kill(self) -> None:
+    def kill(self, sig: typing.Optional[signal.Signals] = None) -> None:
         self._running = False
         self.state_machine.next_thing()
 
@@ -245,11 +246,14 @@ class Process(BaseProcess):
             self.proc.pid, " ".join(self.config.cmd)
         )
 
-    def kill(self) -> None:
+    def kill(self, sig: typing.Optional[signal.Signals] = None) -> None:
         # kill via signal
         self.dying = True
         assert self.proc
-        self.proc.kill()
+        if sig is None:
+            self.proc.kill()
+        else:
+            self.proc.send_signal(sig)
 
 
 class DockerProcess(BaseProcess):
@@ -415,12 +419,13 @@ class DockerProcess(BaseProcess):
 
         return self.docker_wait()
 
-    def kill(self) -> None:
+    def kill(self, sig: typing.Optional[signal.Signals] = None) -> None:
         self.dying = True
+        sigstr = self.config.kill_signal if sig is None else str(sig.value)
         kill_cmd = [
             "docker",
             "kill",
-            f"--signal={self.config.kill_signal}",
+            f"--signal={sigstr}",
             self.config.container_name,
         ]
         p = subprocess.Popen(

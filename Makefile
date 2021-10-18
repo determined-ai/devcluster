@@ -6,6 +6,10 @@ check:
 	flake8 devcluster
 	mypy devcluster
 
+.PHONY: test
+test:
+	python tests/test_e2e.py
+
 .PHONY: fmt
 fmt:
 	black devcluster

@@ -42,4 +42,16 @@ from devcluster.stage import (
     Process,
     DockerProcess,
 )
-from devcluster.net import Server, Client
+from devcluster.net import (
+    Server,
+    ConsoleClient,
+    get_init_from_server,
+    connection_from_spec,
+)
+from devcluster.devcluster import (
+    Devcluster,
+    DevclusterError,
+    StageError,
+    Event,
+    EventCB,
+)

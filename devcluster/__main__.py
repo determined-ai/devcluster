@@ -226,7 +226,7 @@ def main() -> None:
             )
             server.run()
     elif mode == "client":
-        client = dc.Client(args.addr[0])
+        client = dc.ConsoleClient(args.addr[0])
         client.run()
 
 

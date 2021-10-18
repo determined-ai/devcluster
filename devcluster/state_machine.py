@@ -1,8 +1,9 @@
 import enum
 import json
 import os
-import time
+import signal
 import subprocess
+import time
 import typing
 
 import devcluster as dc
@@ -129,6 +130,7 @@ class Status:
 
 StatusCB = typing.Callable[[Status], None]
 ReportCB = typing.Callable[[], None]
+KillRequest = typing.Tuple[int, typing.Optional[signal.Signals]]
 
 
 class StateMachineHandle:
@@ -179,6 +181,11 @@ class StateMachine:
         self.target = 0
         # standing_up is the stage we are standing up (there is only one at a time)
         self.standing_up = None  # type: typing.Optional[int]
+        # when somebody sets the target state to something lower than standing_up, we
+        # cancel the currently standing_up as it is no longer wanted.  We can't infer
+        # that case though, because the devcluster API lets you restart things in
+        # arbitrary order.
+        self.cancel_standing_up = False
 
         # While a Stage can track if it has crashed(), only the StateMachine knows if an
         # AtomicOp for a stage has failed.  We track that per-stage.
@@ -192,6 +199,9 @@ class StateMachine:
 
         # we queue up restart requests to handle them one at a time.
         self.want_restarts = []  # type: typing.List[int]
+
+        # we sometimes queue up kill requests because it's not always safe to kill immediately
+        self.want_kills = []  # type: typing.List[KillRequest]
 
         self.old_status = None  # type: typing.Any
 
@@ -219,6 +229,7 @@ class StateMachine:
                     "pre_started": self.pre_started[i],
                     "post_started": self.post_started[i],
                     "stage_up": self.stage_up[i],
+                    "status": self.stage_status(i).name,
                 }
                 for i, stage in enumerate(self.stages)
             ],
@@ -280,21 +291,38 @@ class StateMachine:
         Combine all crash and flag information to get an overall status for a stage.
         """
         # Crashes overrides any other states.
+        stage = self.stages[stage_id]
         if self.is_crashed(stage_id):
             return StageStatus.CRASHED
+        if not stage.running():
+            return StageStatus.DOWN
         if self.stage_up[stage_id]:
             return StageStatus.UP
         if self.post_started[stage_id]:
             return StageStatus.POSTCMD
-        if self.pre_started[stage_id]:
-            return StageStatus.PRECMD
-        return StageStatus.DOWN
+        return StageStatus.PRECMD
+
+        stage_state = {
+            "name": stage.log_name(),
+            "killable": stage.killable(),
+            "running": stage.running(),
+            "crashed": stage.crashed(),
+            "atomic_crashed": self.atomic_crashed[stage_id],
+            "pre_started": self.pre_started[stage_id],
+            "post_started": self.post_started[stage_id],
+            "stage_up": self.stage_up[stage_id],
+        }
+        raise RuntimeError(f"uninterpretable stage_state: {stage_state}")
 
     def reset_flags(self, stage_id: int) -> None:
-        self.atomic_crashed[self.state] = False
-        self.pre_started[self.state] = False
-        self.post_started[self.state] = False
-        self.stage_up[self.state] = False
+        self.atomic_crashed[stage_id] = False
+        self.pre_started[stage_id] = False
+        self.post_started[stage_id] = False
+        self.stage_up[stage_id] = False
+
+    def reset_standing_up(self) -> None:
+        self.standing_up = None
+        self.cancel_standing_up = False
 
     def advance_stage(self, stage_id: int) -> None:
         """
@@ -345,13 +373,43 @@ class StateMachine:
         """
 
         while True:
+            # Process any kill requests first.
+            if self.want_kills:
+                want_kills = self.want_kills
+                self.want_kills = []
+                for target, sig in want_kills:
+                    stage = self.stages[target]
+                    want_retry = False
+                    if stage.killable():
+                        stage.kill(sig)
+                    elif stage.running():
+                        # stage is running but not yet killable
+                        want_retry = True
+
+                    # Detect if we were standing this target up.
+                    if self.standing_up == target:
+                        if self.atomic_op is None:
+                            # Safe to cancel further work for this stage.
+                            self.reset_standing_up()
+                        else:
+                            # We can't call this kill complete until we've
+                            # canceled the atomic_op as well
+                            self.atomic_op.cancel()
+                            want_retry = True
+
+                    if want_retry:
+                        self.want_kills.append((target, sig))
+
+                if not self.want_kills:
+                    # All requests successfully processed, check for more work
+                    continue
+
             # Execute any stages that we are currently in the process of standing up.
-            if self.standing_up is not None:
-                # If standing_up won't be running when we reach the target state, cancel it.
-                if self.standing_up > self.target:
+            elif self.standing_up is not None:
+                if self.cancel_standing_up:
                     if self.atomic_op is None:
                         # Safe to cancel further work for this stage.
-                        self.standing_up = None
+                        self.reset_standing_up()
                         # Check for more work.
                         continue
                     else:
@@ -360,7 +418,7 @@ class StateMachine:
                     self.advance_stage(self.standing_up)
                     if self.atomic_op is None:
                         # Done standing up this stage.
-                        self.standing_up = None
+                        self.reset_standing_up()
                         # Check for more work.
                         continue
 
@@ -386,6 +444,7 @@ class StateMachine:
                     if self.stages[self.state].killable():
                         self.stages[self.state].kill()
                 else:
+                    self.logger.log(f"resetting stage {want_restart}\n")
                     self.stages[want_restart].reset()
                     self.reset_flags(want_restart)
                     self.standing_up = want_restart
@@ -406,8 +465,8 @@ class StateMachine:
             break
 
         # Notify changes of state.
-        crashed = tuple(self.is_crashed(i) for i in range(len(self.stages)))
-        new_status = (self.state, self.atomic_op, self.target, crashed)
+        statuses = tuple(self.stage_status(i).value for i in range(len(self.stages)))
+        new_status = (self.state, self.atomic_op, self.target, statuses)
         if self.old_status != new_status:
             status = self.make_status()
             for cb in self.callbacks:
@@ -434,15 +493,27 @@ class StateMachine:
             self.set_target(target)
 
     def restart_stage(self, target: int) -> None:
-        if not self.is_crashed(target):
-            raise ValueError(f"stage[{target}] is not crashed, and so cannot restart")
         self.want_restarts.append(target)
+        self.next_thing()
+
+    def kill_stage(
+        self, target: int, sig: typing.Optional[signal.Signals] = None
+    ) -> None:
+        self.want_kills.append((target, sig))
         self.next_thing()
 
     def set_target(self, target: int) -> None:
         """For when you choose a new target state."""
-        if target == self.target:
-            return
+
+        # When we set a lowish target state, we should cancel standing_up
+        # if it is too high; we should also cancel any enqueued restarts that
+        # are too high.  This is unlikely to occur in practice because most
+        # use cases will either use the automatic behavior (target state) or
+        # the programmatic behavior (restarting individual stages), and either
+        # of those use cases, when used alone, will not interfere with the other.
+        if self.standing_up is not None and target < self.standing_up:
+            self.cancel_standing_up = True
+        self.want_restarts = [i for i in self.want_restarts if i <= target]
 
         self.target = target
 

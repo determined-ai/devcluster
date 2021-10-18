@@ -3,10 +3,10 @@ import contextlib
 import json
 import os
 import pickle
-import traceback
 import signal
 import socket
 import sys
+import traceback
 import typing
 
 import devcluster as dc
@@ -189,24 +189,30 @@ class Server:
 
         for spec in listeners:
             l = listener_from_spec(spec)
+            if oneshot or quiet:
+                # When we are not running a console, print a message on stdout to show we are ready.
+                os.write(
+                    sys.stderr.fileno(),
+                    f"devcluster is listening on {spec}\n".encode("utf8"),
+                )
             self.poll.register(l.fileno(), dc.Poll.IN_FLAGS, self.handle_listener)
             self.listeners[l.fileno()] = l
 
-        self.stage_names = [stage_config.name for stage_config in config.stages]
+        self._stage_names = [stage_config.name for stage_config in config.stages]
 
-        self.initial_target_stage_idx = len(self.stage_names)
+        initial_targets = {n: i + 1 for i, n in enumerate(self._stage_names)}
+        initial_targets["dead"] = 0
+        self._initial_target_stage_idx = len(self._stage_names)
         if initial_target_stage is not None:
-            if initial_target_stage not in self.stage_names:
+            if initial_target_stage not in initial_targets:
                 raise ValueError(
                     f"bad initial target stage: {initial_target_stage}. "
-                    f"available options: {self.stage_names}"
+                    f"available options: {['dead'] + self._stage_names}"
                 )
 
-            self.initial_target_stage_idx = (
-                self.stage_names.index(initial_target_stage) + 1
-            )
+            self._initial_target_stage_idx = initial_targets[initial_target_stage]
 
-        self.logger = dc.Logger(self.stage_names, config.temp_dir)
+        self.logger = dc.Logger(self._stage_names, config.temp_dir)
         self.logger.add_callback(self.log_cb)
 
         self.state_machine = dc.StateMachine(self.logger, self.poll, config.commands)
@@ -235,7 +241,7 @@ class Server:
             self.console = dc.Console(
                 self.logger,
                 self.poll,
-                self.stage_names,
+                self._stage_names,
                 config.commands,
                 state_machine_handle,
             )
@@ -301,7 +307,7 @@ class Server:
                 # Draw the initial screen.
                 self.console.start()
 
-            self.state_machine.set_target(self.initial_target_stage_idx)
+            self.state_machine.set_target(self._initial_target_stage_idx)
 
             if self.console:
                 # TODO: handle startup_input without console
@@ -337,10 +343,20 @@ class Server:
         for k, v in jmsg.items():
             if k == "set_target_or_restart":
                 self.state_machine.set_target_or_restart(v)
+            elif k == "set_target":
+                self.state_machine.set_target(v)
+            elif k == "restart_stage":
+                self.state_machine.restart_stage(v)
+            elif k == "kill_stage":
+                target = v["target"]
+                sig = v["signal"] and signal.Signals(v["signal"])
+                self.state_machine.kill_stage(target, sig)
             elif k == "run_cmd":
                 self.state_machine.run_command(v)
             elif k == "quit":
                 self.state_machine.quit()
+            elif k == "dump_state":
+                self.state_machine.dump_state()
             else:
                 raise ValueError(f"invalid jmsg: '{k}'\n")
 
@@ -360,23 +376,31 @@ class Server:
         self.clients.remove(client)
 
 
-class Client:
+def get_init_from_server(
+    sock: socket.socket,
+) -> typing.Tuple[typing.Dict[str, typing.Any], bytes]:
+    buf = b""
+    while b"\n" not in buf:
+        new_bytes = sock.recv(4096)
+        if len(new_bytes) == 0:
+            raise ValueError("connection closed during initial download")
+        buf += new_bytes
+
+    end = buf.find(b"\n")
+    line = buf[:end]
+    buf = buf[end + 1 :]
+
+    jmsg = json.loads(line.decode("utf8"))
+    init = pickle.loads(base64.b64decode(jmsg["init"]))
+    return init, buf
+
+
+class ConsoleClient:
     def __init__(self, spec: str) -> None:
         sock = connection_from_spec(spec)
 
-        buf = b""
-        while b"\n" not in buf:
-            new_bytes = sock.recv(4096)
-            if len(new_bytes) == 0:
-                raise ValueError("connection closed during initial download")
-            buf += new_bytes
+        init, buf = get_init_from_server(sock)
 
-        end = buf.find(b"\n")
-        line = buf[:end]
-        buf = buf[end + 1 :]
-
-        jmsg = json.loads(line.decode("utf8"))
-        init = pickle.loads(base64.b64decode(jmsg["init"]))
         self.first_status = dc.Status.from_dict(init["first_status"])
 
         self.poll = dc.Poll()
