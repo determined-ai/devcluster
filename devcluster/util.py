@@ -29,12 +29,12 @@ def nonblock(fd: int) -> None:
 
 
 def fore_num(num: int) -> bytes:
-    """Set terminal background color to a numbred color (0-255)."""
+    """Set terminal background color to a numbered color (0-255)."""
     return b"\x1b[38;5;%dm" % (num)
 
 
 def back_num(num: int) -> bytes:
-    """Set terminal background color to a numbred color (0-255)."""
+    """Set terminal background color to a numbered color (0-255)."""
     return b"\x1b[48;5;%dm" % (num)
 
 

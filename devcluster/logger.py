@@ -6,11 +6,6 @@ import typing
 import devcluster as dc
 
 
-def separate_lines(msg: bytes) -> typing.List[bytes]:
-    lines = msg.split(b"\n")
-    return [l + b"\n" for l in lines[:-1]] + ([lines[-1]] if lines[-1] else [])
-
-
 class Log:
     """The only parameter to a LogCB.  Part of the devcluster API; property list is append-only."""
 
@@ -67,7 +62,7 @@ class Logger:
 
         # Split the message along embedded line breaks, to improve scrolling granularity.
         # They will all have the same timestamp, but python sorting is stable so that is OK.
-        lines = separate_lines(msg)
+        lines = msg.splitlines(keepends=True)
 
         if self.log_dir is not None:
             with open(os.path.join(self.log_dir, stream + ".log"), "ab") as f:
