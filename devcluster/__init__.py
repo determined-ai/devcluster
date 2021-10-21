@@ -20,8 +20,8 @@ from devcluster.config import (
     AtomicConfig,
 )
 from devcluster.recovery import ProcessTracker
-from devcluster.logger import Logger
-from devcluster.state_machine import StateMachine, StateMachineHandle
+from devcluster.logger import Logger, Log, LogCB
+from devcluster.state_machine import StateMachine, StateMachineHandle, Status, StatusCB
 from devcluster.console import Console
 from devcluster.atomic import (
     AtomicOperation,

@@ -80,37 +80,39 @@ class OneshotCB:
     """
 
     def __init__(self, quit_cb: typing.Callable[[], None]) -> None:
-        self.first_target = None  # type: typing.Optional[str]
+        self.first_target = None  # type: typing.Optional[int]
         self.up = False
         self.failing = False
         self.quit_cb = quit_cb
 
-    def state_cb(
-        self, state: str, substate: str, target: str, crashes: typing.Sequence[bool]
-    ) -> None:
+    def status_cb(self, status: dc.Status) -> None:
         if self.failing:
             return
 
         if self.first_target is None:
-            self.first_target = target
+            self.first_target = status.target_idx
 
         # Did we reach the target state?
-        if state == self.first_target and substate == "" and not self.up:
+        if (
+            status.state_idx == self.first_target
+            and status.atomic_str == ""
+            and not self.up
+        ):
             self.up = True
             os.write(sys.stderr.fileno(), b"devcluster is up\n")
 
         # Did a stage fail to start, or did a previously-up stage crash?
-        if target != self.first_target or any(crashes):
+        if status.target_idx != self.first_target or any(status.crashed):
             self.failing = True
             os.write(sys.stderr.fileno(), b"devcluster is failing\n")
             self.quit_cb()
 
-    def log_cb(self, msg: bytes, stream: str) -> None:
-        lines = msg.split(b"\n")
+    def log_cb(self, log: dc.Log) -> None:
+        lines = log.msg.split(b"\n")
         if lines and lines[-1] == b"":
             lines = lines[:-1]
         for line in lines:
-            os.write(sys.stdout.fileno(), dc.asbytes(stream) + b": " + line + b"\n")
+            os.write(sys.stdout.fileno(), dc.asbytes(log.stream) + b": " + line + b"\n")
 
 
 # Jmsg is a message from the json-based protocol between server and client.
@@ -236,7 +238,7 @@ class Server:
                 config.commands,
                 state_machine_handle,
             )
-            self.state_machine.add_callback(self.console.state_cb)
+            self.state_machine.add_callback(self.console.status_cb)
 
             def _sigwinch_handler(signum: typing.Any, frame: typing.Any) -> None:
                 """Enqueue a call to _sigwinch_callback() via poll()."""
@@ -258,7 +260,7 @@ class Server:
                     self.state_machine.quit()
 
             oneshot_cb = OneshotCB(quit_cb)
-            self.state_machine.add_callback(oneshot_cb.state_cb)
+            self.state_machine.add_callback(oneshot_cb.status_cb)
 
             self.logger.add_callback(oneshot_cb.log_cb)
 
@@ -322,7 +324,7 @@ class Server:
                 "stages": [s.log_name() for s in self.state_machine.stages[1:]],
                 "logger_streams": self.logger.streams,
                 "logger_index": self.logger.index,
-                "first_state": self.state_machine.gen_state_cb(),
+                "first_status": self.state_machine.gen_state_cb().to_dict(),
                 "command_configs": self.command_config,
             }
             client.write({"init": base64.b64encode(pickle.dumps(init)).decode("utf8")})
@@ -341,17 +343,15 @@ class Server:
             else:
                 raise ValueError(f"invalid jmsg: '{k}'\n")
 
-    def log_cb(self, msg: bytes, stream: str) -> None:
+    def log_cb(self, log: dc.Log) -> None:
         # the server listens to log callbacks and broadcasts them to all clients
-        jmsg = {"log_cb": [base64.b64encode(msg).decode("utf8"), stream]}
+        jmsg = {"log_cb": log.to_dict()}
         for client in self.clients:
             client.write(jmsg)
 
-    def state_machine_cb(
-        self, state: str, atomic: str, target: str, crashes: typing.Sequence[bool]
-    ) -> None:
+    def state_machine_cb(self, status: dc.Status) -> None:
         # the server listens to state machine callbacks and broadcasts them to all clients
-        jmsg = {"state_cb": [state, atomic, target, crashes]}
+        jmsg = {"status_cb": status.to_dict()}
         for client in self.clients:
             client.write(jmsg)
 
@@ -376,7 +376,7 @@ class Client:
 
         jmsg = json.loads(line.decode("utf8"))
         init = pickle.loads(base64.b64decode(jmsg["init"]))
-        self.first_state = init["first_state"]
+        self.first_status = dc.Status.from_dict(init["first_status"])
 
         self.poll = dc.Poll()
 
@@ -431,7 +431,7 @@ class Client:
     def run(self) -> None:
         with dc.terminal_config():
             self.console.start()
-            self.console.state_cb(*self.first_state)
+            self.console.status_cb(self.first_status)
 
             # for c in config.startup_input:
             #     self.console.handle_key(c)
@@ -460,9 +460,11 @@ class Client:
         for key, value in jmsg.items():
             if key == "log_cb":
                 # replay logs through our own Logger
-                self.logger.log(base64.b64decode(value[0]), value[1])
-            elif key == "state_cb":
-                self.console.state_cb(*value)
+                log = dc.Log.from_dict(value)
+                self.logger.log(log.msg, log.stream)
+            elif key == "status_cb":
+                status = dc.Status.from_dict(value)
+                self.console.status_cb(status)
             else:
                 raise ValueError(f"unexpected jmsg: {key}")
 

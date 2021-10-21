@@ -1,3 +1,4 @@
+import base64
 import os
 import time
 import typing
@@ -10,9 +11,26 @@ def separate_lines(msg: bytes) -> typing.List[bytes]:
     return [l + b"\n" for l in lines[:-1]] + ([lines[-1]] if lines[-1] else [])
 
 
+class Log:
+    """The only parameter to a LogCB.  Part of the devcluster API; property list is append-only."""
+
+    def __init__(self, msg: bytes, stream: str) -> None:
+        self.msg = msg
+        self.stream = stream
+
+    def to_dict(self) -> typing.Any:
+        return {"msg": base64.b64encode(self.msg).decode("utf8"), "stream": self.stream}
+
+    @classmethod
+    def from_dict(self, j: typing.Any) -> "Log":
+        msg = base64.b64decode(j["msg"])
+        stream = j["stream"]
+        return Log(msg=msg, stream=stream)
+
+
+LogCB = typing.Callable[[Log], None]
 StreamItem = typing.Tuple[float, bytes]
 Streams = typing.Dict[str, typing.List[StreamItem]]
-LogCB = typing.Callable[[bytes, str], None]
 
 
 class Logger:
@@ -57,9 +75,10 @@ class Logger:
 
         for line in lines:
             self.streams[stream].append((now, line))
+            log = Log(line, stream)
 
             for cb in self.callbacks:
-                cb(line, stream)
+                cb(log)
 
     def add_callback(self, cb: LogCB) -> None:
         self.callbacks.append(cb)

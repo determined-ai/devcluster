@@ -87,8 +87,36 @@ class Command:
         self.end_cb(self)
 
 
-# StateCB args are: state_str, atomic_str, target_str, crash_mask
-StateCB = typing.Callable[[str, str, str, typing.Sequence[bool]], None]
+class Status:
+    """
+    The only parameter to a StatusCB.  Part of the devcluster API; property list is append-only.
+    """
+
+    def __init__(
+        self,
+        state_idx: int,
+        state_str: str,
+        target_idx: int,
+        target_str: str,
+        atomic_str: str,
+        crashed: typing.Sequence[bool],
+    ) -> None:
+        self.state_idx = state_idx
+        self.state_str = state_str
+        self.target_idx = target_idx
+        self.target_str = target_str
+        self.atomic_str = atomic_str
+        self.crashed = crashed
+
+    def to_dict(self) -> typing.Any:
+        return vars(self)
+
+    @classmethod
+    def from_dict(self, j: typing.Any) -> "Status":
+        return Status(**j)
+
+
+StatusCB = typing.Callable[[Status], None]
 ReportCB = typing.Callable[[], None]
 
 
@@ -150,7 +178,7 @@ class StateMachine:
 
         self.old_status = None  # type: typing.Any
 
-        self.callbacks = []  # type: typing.List[StateCB]
+        self.callbacks = []  # type: typing.List[StatusCB]
 
         self.report_callbacks = {}  # type: typing.Dict[str, ReportCB]
 
@@ -211,7 +239,7 @@ class StateMachine:
         self.stages.append(stage)
         self.atomic_crashed.append(False)
 
-    def add_callback(self, cb: StateCB) -> None:
+    def add_callback(self, cb: StatusCB) -> None:
         self.callbacks.append(cb)
 
     def add_report_callback(self, report_msg: str, cb: ReportCB) -> None:
@@ -330,18 +358,21 @@ class StateMachine:
         crashed = tuple(self.is_crashed(i) for i in range(len(self.stages)))
         new_status = (self.state, self.atomic_op, self.target, crashed)
         if self.old_status != new_status:
-            state_str, atomic_str, target_str, crashed = self.gen_state_cb()
+            status = self.gen_state_cb()
             for cb in self.callbacks:
-                cb(state_str, atomic_str, target_str, crashed)
+                cb(status)
 
             self.old_status = new_status
 
-    def gen_state_cb(self) -> typing.Tuple[str, str, str, typing.Tuple[bool, ...]]:
-        state_str = self.stages[self.state].log_name().upper()
-        atomic_str = str(self.atomic_op) if self.atomic_op else ""
-        target_str = self.stages[self.target].log_name().upper()
-        crashed = tuple(self.is_crashed(i) for i in range(len(self.stages)))
-        return state_str, atomic_str, target_str, crashed
+    def gen_state_cb(self) -> Status:
+        return Status(
+            state_idx=self.state,
+            state_str=self.stages[self.state].log_name(),
+            target_idx=self.target,
+            target_str=self.stages[self.target].log_name(),
+            atomic_str=str(self.atomic_op),
+            crashed=tuple(self.is_crashed(i) for i in range(len(self.stages))),
+        )
 
     def set_target_or_restart(self, target: int) -> None:
         """

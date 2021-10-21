@@ -88,7 +88,14 @@ class Console:
         self.command_configs = command_configs
         self.state_machine_handle = state_machine_handle
 
-        self.status = ("state", "substate", "target", [False for _ in self.stages])
+        self.status = dc.Status(
+            state_idx=0,
+            state_str="dead",
+            target_idx=0,
+            target_str="dead",
+            atomic_str="",
+            crashed=tuple(False for _ in self.stages),
+        )
 
         # default to all streams active
         self.active_streams = set(self.logger.streams)
@@ -105,18 +112,16 @@ class Console:
     def start(self) -> None:
         self.redraw()
 
-    def log_cb(self, msg: bytes, stream: str) -> None:
-        if stream in self.active_streams:
+    def log_cb(self, log: dc.Log) -> None:
+        if log.stream in self.active_streams:
             if self.scroll:
                 # don't tail the logs when we are scrolling
                 self.scroll += 1
             else:
-                self.print_bar(msg)
+                self.print_bar(log.msg)
 
-    def state_cb(
-        self, state: str, substate: str, target: str, crashes: typing.Sequence[bool]
-    ) -> None:
-        self.status = (state, substate, target, list(crashes))
+    def status_cb(self, status: dc.Status) -> None:
+        self.status = status
         self.print_bar()
 
     def redraw(self) -> None:
@@ -329,15 +334,14 @@ class Console:
 
     def print_bar(self, prebar_bytes: bytes = b"") -> None:
         cols = get_cols()
-        state, _, target, crashes = self.status
 
         # When change_scroll_region is available, we only write the bar when we have to modify it.
         new_bar_state = (
             get_cols(),
             get_rows(),
-            state,
-            target,
-            tuple(crashes),
+            self.status.state_str,
+            self.status.target_str,
+            tuple(self.status.crashed),
             tuple(self.active_streams),
         )
         if dc.has_csr() and self.last_bar_state == new_bar_state:
@@ -355,18 +359,18 @@ class Console:
         bar1_len = len(bar1)
 
         # Decide on colors.
-        if state.lower() == "dead":
+        if self.status.state_str.lower() == "dead":
             colors = [orange] + [blue] * (len(self.stages) - 1)
         else:
             colors = [blue] * len(self.stages)
             for i in range(1, len(self.stages)):
-                colors[i] = red if crashes[i] else orange
-                if self.stages[i].lower() == state.lower():
+                colors[i] = red if self.status.crashed[i] else orange
+                if self.stages[i].lower() == self.status.state_str.lower():
                     break
 
         for i, (stage, color) in enumerate(zip(self.stages, colors)):
             # Target stage is donoted with <
-            if stage.lower() == target.lower():
+            if stage.lower() == self.status.target_str.lower():
                 post = b"< "
             else:
                 post = b"  "
