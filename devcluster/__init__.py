@@ -1,11 +1,15 @@
 __version__ = "1.0.0"
 from devcluster.util import (
-    nonblock,
     asbytes,
-    terminal_config,
+    back_num,
+    fore_num,
     has_csr,
-    Text,
     ImpossibleException,
+    nonblock,
+    Poll,
+    res,
+    terminal_config,
+    Text,
 )
 from devcluster.config import (
     Config,
@@ -16,13 +20,9 @@ from devcluster.config import (
     AtomicConfig,
 )
 from devcluster.recovery import ProcessTracker
-from devcluster.devcluster import (
-    Poll,
-    Logger,
-    StateMachine,
-    StateMachineHandle,
-    Console,
-)
+from devcluster.logger import Logger, Log, LogCB
+from devcluster.state_machine import StateMachine, StateMachineHandle, Status, StatusCB
+from devcluster.console import Console
 from devcluster.atomic import (
     AtomicOperation,
     ConnCheck,

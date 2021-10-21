@@ -114,11 +114,11 @@ class LogCheck(AtomicOperation):
     def join(self) -> None:
         pass
 
-    def log_cb(self, msg: bytes, stream: str) -> None:
-        if stream != self.stream:
+    def log_cb(self, log: dc.Log) -> None:
+        if log.stream != self.stream:
             return
 
-        if len(self.pattern.findall(msg)) == 0:
+        if len(self.pattern.findall(log.msg)) == 0:
             return
 
         os.write(self.report_fd, b"S")
