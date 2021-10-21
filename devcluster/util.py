@@ -3,6 +3,7 @@ import fcntl
 import os
 import termios
 import subprocess
+import select
 import sys
 import typing
 
@@ -25,6 +26,20 @@ def asbytes(msg: Text) -> bytes:
 def nonblock(fd: int) -> None:
     flags = fcntl.fcntl(fd, fcntl.F_GETFL)
     fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK | os.O_CLOEXEC)
+
+
+def fore_num(num: int) -> bytes:
+    """Set terminal background color to a numbred color (0-255)."""
+    return b"\x1b[38;5;%dm" % (num)
+
+
+def back_num(num: int) -> bytes:
+    """Set terminal background color to a numbred color (0-255)."""
+    return b"\x1b[48;5;%dm" % (num)
+
+
+# "res"et coloring in terminal.
+res = b"\x1b[m"
 
 
 _has_csr = None
@@ -86,3 +101,35 @@ def terminal_config() -> typing.Iterator[None]:
             os.write(sys.stdout.fileno(), b"\x1b[r")
         # disable alternate screen buffer
         os.write(sys.stdout.fileno(), b"\x1b[?1049l")
+
+
+Handler = typing.Callable[[int, int], None]
+
+
+class Poll:
+    IN_FLAGS = select.POLLIN | select.POLLPRI
+    ERR_FLAGS = select.POLLERR | select.POLLHUP | select.POLLNVAL
+
+    def __init__(self) -> None:
+        # Maps file descriptors to handler functions.
+        self.handlers = {}  # type: typing.Dict[int, Handler]
+        # Maps handlers back to file descriptors.
+        self.fds = {}  # type: typing.Dict[Handler, int]
+        self._poll = select.poll()
+
+    def register(self, fd: int, flags: int, handler: Handler) -> None:
+        self._poll.register(fd, flags)
+        self.handlers[fd] = handler
+        self.fds[handler] = fd
+
+    def unregister(self, handler: Handler) -> None:
+        fd = self.fds[handler]
+        self._poll.unregister(fd)
+        del self.fds[handler]
+        del self.handlers[fd]
+
+    def poll(self, *args: typing.Any, **kwargs: typing.Any) -> None:
+        ready = self._poll.poll()
+        for fd, ev in ready:
+            handler = self.handlers[fd]
+            handler(ev, fd)
