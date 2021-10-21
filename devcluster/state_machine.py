@@ -1,3 +1,4 @@
+import enum
 import json
 import os
 import time
@@ -87,6 +88,14 @@ class Command:
         self.end_cb(self)
 
 
+class StageStatus(enum.Enum):
+    DOWN = 0
+    PRECMD = 1
+    POSTCMD = 2
+    UP = 3
+    CRASHED = 4
+
+
 class Status:
     """
     The only parameter to a StatusCB.  Part of the devcluster API; property list is append-only.
@@ -95,25 +104,27 @@ class Status:
     def __init__(
         self,
         state_idx: int,
-        state_str: str,
         target_idx: int,
-        target_str: str,
-        atomic_str: str,
-        crashed: typing.Sequence[bool],
+        stages: typing.Sequence[StageStatus],
     ) -> None:
         self.state_idx = state_idx
-        self.state_str = state_str
         self.target_idx = target_idx
-        self.target_str = target_str
-        self.atomic_str = atomic_str
-        self.crashed = crashed
+        self.stages = stages
 
     def to_dict(self) -> typing.Any:
-        return vars(self)
+        return {
+            "state_idx": self.state_idx,
+            "target_idx": self.target_idx,
+            "stages": tuple(s.value for s in self.stages),
+        }
 
     @classmethod
     def from_dict(self, j: typing.Any) -> "Status":
-        return Status(**j)
+        return Status(
+            state_idx=j["state_idx"],
+            target_idx=j["target_idx"],
+            stages=tuple(StageStatus(s) for s in j["stages"]),
+        )
 
 
 StatusCB = typing.Callable[[Status], None]
@@ -172,6 +183,12 @@ class StateMachine:
         # While a Stage can track if it has crashed(), only the StateMachine knows if an
         # AtomicOp for a stage has failed.  We track that per-stage.
         self.atomic_crashed = [False]
+        # pre_started tracks which stages are at least as far as starting precommands.
+        self.pre_started = [False]
+        # post_started tracks which stages are at least as far as starting postcommands.
+        self.post_started = [False]
+        # stage_up tracks which stages are considered fully 'up'.
+        self.stage_up = [False]
 
         # we queue up restart requests to handle them one at a time.
         self.want_restarts = []  # type: typing.List[int]
@@ -199,6 +216,9 @@ class StateMachine:
                     "running": stage.running(),
                     "crashed": stage.crashed(),
                     "atomic_crashed": self.atomic_crashed[i],
+                    "pre_started": self.pre_started[i],
+                    "post_started": self.post_started[i],
+                    "stage_up": self.stage_up[i],
                 }
                 for i, stage in enumerate(self.stages)
             ],
@@ -238,6 +258,9 @@ class StateMachine:
     def add_stage(self, stage: "dc.Stage") -> None:
         self.stages.append(stage)
         self.atomic_crashed.append(False)
+        self.pre_started.append(False)
+        self.post_started.append(False)
+        self.stage_up.append(False)
 
     def add_callback(self, cb: StatusCB) -> None:
         self.callbacks.append(cb)
@@ -251,6 +274,27 @@ class StateMachine:
         with the AtomicOp crash information that we track here.
         """
         return self.stages[stage_id].crashed() or self.atomic_crashed[stage_id]
+
+    def stage_status(self, stage_id: int) -> StageStatus:
+        """
+        Combine all crash and flag information to get an overall status for a stage.
+        """
+        # Crashes overrides any other states.
+        if self.is_crashed(stage_id):
+            return StageStatus.CRASHED
+        if self.stage_up[stage_id]:
+            return StageStatus.UP
+        if self.post_started[stage_id]:
+            return StageStatus.POSTCMD
+        if self.pre_started[stage_id]:
+            return StageStatus.PRECMD
+        return StageStatus.DOWN
+
+    def reset_flags(self, stage_id: int) -> None:
+        self.atomic_crashed[self.state] = False
+        self.pre_started[self.state] = False
+        self.post_started[self.state] = False
+        self.stage_up[self.state] = False
 
     def advance_stage(self, stage_id: int) -> None:
         """
@@ -269,12 +313,16 @@ class StateMachine:
         if self.atomic_op is not None:
             return
 
+        self.pre_started[stage_id] = True
+
         process = self.stages[stage_id]
         # Is there another precommand?
         atomic_op = process.get_precommand()
         if atomic_op is not None:
             self.atomic_op = atomic_op
             return
+
+        self.post_started[stage_id] = True
 
         # Launch the first postcommand immediately before launching the command, in case there
         # is a race condition (such as registering for log callbacks on the stream).
@@ -284,6 +332,9 @@ class StateMachine:
 
         if not process.running():
             process.run_command()
+
+        if atomic_op is None:
+            self.stage_up[stage_id] = True
 
     def next_thing(self) -> None:
         """
@@ -321,7 +372,7 @@ class StateMachine:
                 # Is it done running? (though usually if it was killable it won't be yet)
                 if not self.stages[self.state].running():
                     self.stages[self.state].reset()
-                    self.atomic_crashed[self.state] = False
+                    self.reset_flags(self.state)
                     self.state -= 1
                     # Check for more work.
                     continue
@@ -336,7 +387,7 @@ class StateMachine:
                         self.stages[self.state].kill()
                 else:
                     self.stages[want_restart].reset()
-                    self.atomic_crashed[want_restart] = False
+                    self.reset_flags(want_restart)
                     self.standing_up = want_restart
                     self.want_restarts.pop(0)
                     # Start executing on this restart.
@@ -358,20 +409,17 @@ class StateMachine:
         crashed = tuple(self.is_crashed(i) for i in range(len(self.stages)))
         new_status = (self.state, self.atomic_op, self.target, crashed)
         if self.old_status != new_status:
-            status = self.gen_state_cb()
+            status = self.make_status()
             for cb in self.callbacks:
                 cb(status)
 
             self.old_status = new_status
 
-    def gen_state_cb(self) -> Status:
+    def make_status(self) -> Status:
         return Status(
             state_idx=self.state,
-            state_str=self.stages[self.state].log_name(),
             target_idx=self.target,
-            target_str=self.stages[self.target].log_name(),
-            atomic_str=str(self.atomic_op),
-            crashed=tuple(self.is_crashed(i) for i in range(len(self.stages))),
+            stages=tuple(self.stage_status(i) for i in range(len(self.stages))),
         )
 
     def set_target_or_restart(self, target: int) -> None:

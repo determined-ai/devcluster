@@ -21,7 +21,13 @@ from devcluster.config import (
 )
 from devcluster.recovery import ProcessTracker
 from devcluster.logger import Logger, Log, LogCB
-from devcluster.state_machine import StateMachine, StateMachineHandle, Status, StatusCB
+from devcluster.state_machine import (
+    StateMachine,
+    StateMachineHandle,
+    Status,
+    StageStatus,
+    StatusCB,
+)
 from devcluster.console import Console
 from devcluster.atomic import (
     AtomicOperation,

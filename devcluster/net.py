@@ -95,14 +95,15 @@ class OneshotCB:
         # Did we reach the target state?
         if (
             status.state_idx == self.first_target
-            and status.atomic_str == ""
+            and status.stages[self.first_target] == dc.StageStatus.UP
             and not self.up
         ):
             self.up = True
             os.write(sys.stderr.fileno(), b"devcluster is up\n")
 
         # Did a stage fail to start, or did a previously-up stage crash?
-        if status.target_idx != self.first_target or any(status.crashed):
+        crashed = any(s == dc.StageStatus.CRASHED for s in status.stages)
+        if status.target_idx != self.first_target or crashed:
             self.failing = True
             os.write(sys.stderr.fileno(), b"devcluster is failing\n")
             self.quit_cb()
@@ -324,7 +325,7 @@ class Server:
                 "stages": [s.log_name() for s in self.state_machine.stages[1:]],
                 "logger_streams": self.logger.streams,
                 "logger_index": self.logger.index,
-                "first_status": self.state_machine.gen_state_cb().to_dict(),
+                "first_status": self.state_machine.make_status().to_dict(),
                 "command_configs": self.command_config,
             }
             client.write({"init": base64.b64encode(pickle.dumps(init)).decode("utf8")})
