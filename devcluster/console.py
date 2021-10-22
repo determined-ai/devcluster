@@ -90,11 +90,8 @@ class Console:
 
         self.status = dc.Status(
             state_idx=0,
-            state_str="dead",
             target_idx=0,
-            target_str="dead",
-            atomic_str="",
-            crashed=tuple(False for _ in self.stages),
+            stages=tuple(dc.StageStatus.DOWN for _ in self.stages),
         )
 
         # default to all streams active
@@ -339,9 +336,9 @@ class Console:
         new_bar_state = (
             get_cols(),
             get_rows(),
-            self.status.state_str,
-            self.status.target_str,
-            tuple(self.status.crashed),
+            self.status.state_idx,
+            self.status.target_idx,
+            tuple(s.value for s in self.status.stages),
             tuple(self.active_streams),
         )
         if dc.has_csr() and self.last_bar_state == new_bar_state:
@@ -359,18 +356,23 @@ class Console:
         bar1_len = len(bar1)
 
         # Decide on colors.
-        if self.status.state_str.lower() == "dead":
+        if all(s == dc.StageStatus.DOWN for s in self.status.stages):
+            # Special coloring rules: only when nothing is running is the DEAD
+            # state colored orange.
             colors = [orange] + [blue] * (len(self.stages) - 1)
         else:
-            colors = [blue] * len(self.stages)
-            for i in range(1, len(self.stages)):
-                colors[i] = red if self.status.crashed[i] else orange
-                if self.stages[i].lower() == self.status.state_str.lower():
-                    break
+            colors = [blue]
+            for stage_status in self.status.stages[1:]:
+                if stage_status == dc.StageStatus.DOWN:
+                    colors.append(blue)
+                elif stage_status == dc.StageStatus.CRASHED:
+                    colors.append(red)
+                else:
+                    colors.append(orange)
 
         for i, (stage, color) in enumerate(zip(self.stages, colors)):
             # Target stage is donoted with <
-            if stage.lower() == self.status.target_str.lower():
+            if i == self.status.target_idx:
                 post = b"< "
             else:
                 post = b"  "
