@@ -15,7 +15,30 @@ jobs:
       - setup-python
       - run: make check
 
+  test:
+    docker:
+      - image: python:3.6.9
+    steps:
+      - checkout
+      - setup-python
+      - run: make test
+      - run:
+          when: always
+          command: cat /tmp/devcluster/console.log
+      - run:
+          when: always
+          command: cat /tmp/devcluster/db.log
+      - run:
+          when: always
+          command: cat /tmp/devcluster/master.log
+      - run:
+          when: always
+          command: cat /tmp/devcluster/agent.log
+
 workflows:
   lint:
     jobs:
       - lint
+  test:
+    jobs:
+      - test
