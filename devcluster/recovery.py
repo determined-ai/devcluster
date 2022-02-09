@@ -70,7 +70,7 @@ def recover_process(pid: int, match_args: str) -> typing.Optional[str]:
     # ps args, formatting, and exit code all tested on mac and linux
     cmd = ["ps", "-p", str(pid), "-o", "command"]
     p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    assert p.stdout
+    assert p.stdout is not None
     if p.returncode != 0:
         # No such pid found
         return None
@@ -98,7 +98,7 @@ def recover_container(container_id: str) -> typing.Optional[str]:
         "{{.State}},{{.Names}}",
     ]
     p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    assert p.stdout
+    assert p.stdout is not None
     out = p.stdout.strip().decode("utf8")
 
     if not out:
