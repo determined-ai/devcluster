@@ -26,7 +26,6 @@ try:
         with ref.open("rb") as f:
             return f.read()  # type: ignore
 
-
 except ImportError:
     import pkg_resources
 
