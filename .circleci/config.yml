@@ -9,7 +9,7 @@ commands:
 jobs:
   lint:
     docker:
-      - image: python:3.6.9
+      - image: python:3.7
     steps:
       - checkout
       - setup-python
@@ -17,10 +17,11 @@ jobs:
 
   test:
     docker:
-      - image: python:3.6.9
+      - image: python:3.7
     steps:
       - checkout
       - setup-python
+      - run: apt update && apt install -y iproute2
       - run: make test
       - run:
           when: always
