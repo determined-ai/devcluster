@@ -14,7 +14,7 @@ stages:
         - -e
         - HASURA_GRAPHQL_ADMIN_SECRET=hasura
         - -e
-        - HASURA_GRAPHQL_DATABASE_URL=postgres://postgres:postgres@MY_IP_ADDR:5432/determined
+        - HASURA_GRAPHQL_DATABASE_URL=postgres://postgres:postgres@$DOCKER_LOCALHOST:5432/determined
         - -e
         - HASURA_GRAPHQL_ENABLE_CONSOLE=true
         - -e
@@ -31,8 +31,11 @@ stages:
   - master:
       pre:
         - sh: make -C master build-files install-native
+      post:
+        - conncheck:
+            port: 8080
       cmdline:
-        - $GOPATH/bin/go/bin/determined-master
+        - $GOPATH/bin/determined-master
         - --config-file
         - :config
       config_file:
@@ -64,5 +67,5 @@ stages:
       config_file:
         # In 0.12.3, container_master_host was not available, so you should use
         # your computer's external IP address here.
-        master_host: MY_IP_ADDR
+        master_host: $DOCKER_LOCALHOST
         master_port: 8080
