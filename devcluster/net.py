@@ -237,6 +237,8 @@ class Server:
                 self.state_machine.run_command,
                 self.state_machine.quit,
                 self.state_machine.dump_state,
+                self.state_machine.kill_stage,
+                self.state_machine.restart_stage,
             )
             self.console = dc.Console(
                 self.logger,
@@ -413,6 +415,8 @@ class ConsoleClient:
             self.run_command,
             self.quit,
             self.dump_state,
+            self.kill_stage,
+            self.restart_stage,
         )
         self.console = dc.Console(
             self.logger,
@@ -507,3 +511,9 @@ class ConsoleClient:
 
     def dump_state(self) -> None:
         self.server.write({"dump_state": None})
+
+    def kill_stage(self, idx: int) -> None:
+        self.server.write({"kill_stage": {"target": idx, "signal": None}})
+
+    def restart_stage(self, idx: int) -> None:
+        self.server.write({"restart_stage": idx})
