@@ -195,6 +195,16 @@ class Console:
             return
         self.set_stream(idx, None)
 
+    def try_kill_stage(self, idx: int) -> None:
+        if idx >= len(self.stages):
+            return
+        self.state_machine_handle.kill_stage(idx)
+
+    def try_restart_stage(self, idx: int) -> None:
+        if idx >= len(self.stages):
+            return
+        self.state_machine_handle.restart_stage(idx)
+
     def act_scroll(self, val: int) -> None:
         self.scroll = max(0, self.scroll + val)
         self.redraw()
@@ -283,6 +293,10 @@ class Console:
                     self.act_marker()
                 elif cmdstr == ":noop":
                     self.act_noop()
+                elif cmdstr.startswith(":kill-stage:"):
+                    self.try_kill_stage(int(cmdstr[len(":kill-stage:") :]))
+                elif cmdstr.startswith(":restart-stage:"):
+                    self.try_restart_stage(int(cmdstr[len(":restart-stage:") :]))
                 else:
                     self.logger.log(
                         dc.fore_num(9)
@@ -309,6 +323,12 @@ class Console:
             self.act_scroll_reset()
         elif key == " ":
             self.act_marker()
+        else:
+            self.logger.log(
+                dc.fore_num(9)
+                + dc.asbytes(f'"{key}" is not a known shortcut\n')
+                + dc.res
+            )
 
     def handle_stdin(self, ev: int, _: int) -> None:
         if ev & dc.Poll.IN_FLAGS:

@@ -144,11 +144,15 @@ class StateMachineHandle:
         run_command: typing.Callable[[str], None],
         quit_cb: typing.Callable[[], None],
         dump_state: typing.Callable[[], None],
+        kill_stage: typing.Callable[[int], None],
+        restart_stage: typing.Callable[[int], None],
     ):
         self.set_target_or_restart = set_target_or_restart
         self.run_command = run_command
         self.quit = quit_cb
         self.dump_state = dump_state
+        self.kill_stage = kill_stage
+        self.restart_stage = restart_stage
 
 
 class StateMachine:
