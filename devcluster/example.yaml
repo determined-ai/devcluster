@@ -110,7 +110,7 @@ stages:
         root: tools/build
         # A dedicated directory for caching file. This directory is assumed to be empty.
         cache:
-          cache_dir: /tmp/determined-cache
+          cache_dir: /var/cache/determined
         # logging:
         #   type: elastic
         #   host: 127.0.0.1
