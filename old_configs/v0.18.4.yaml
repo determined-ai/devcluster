@@ -1,0 +1,220 @@
+# startup_input is how you configure the UI.  It's literally just a set of keys
+# that will be passed into the UI as if you typed them.  This key will cause the
+# python code to rebuild on startup (see `commands`):
+startup_input: "p"
+
+# cwd (change working directory) tells devcluster which directory to `cd` into
+# on startup (probably the root of the determined repository).  All of the
+# relative paths in the whole config will be relative to this setting.  If the
+# setting is missing or is None, devcluster will work fine but you'll have to
+# run it from the right directory when you start it up.
+# cwd: /path/to/determined-ai/determined
+
+# temp_dir is where temporary config files and persistent logs are written to.
+# You might overwrite it if you wanted to run multiple concurrent clusters.
+# temp_dir: /tmp/devcluster
+
+# commands is where you can assign arbitrary commands to hotkeys.  They should
+# be commands that do not otherwise interfere with the state of the cluster
+# (i.e. don't kill the master in a command).
+commands:
+  # arbitrary commands
+  p: make -C harness build  # rebuild Python
+  w: make -C webui build    # rebuild Webui
+  c: make -C docs build     # rebuild doCs
+
+  # You can also use some magic commands to override the controls to devcluster:
+  # k: :scroll-up
+  # j: :scroll-dn
+  # u: :scroll-up-10
+  # d: :scroll-dn-10
+  # x: :scroll-reset
+  # q: :quit
+  # " ": :marker  # spacebar
+
+# stages is the configuration of the whole cluster.  Each stage must be
+# completed before moving to the next stage, so order matters.  If you want to
+# add an elastic stage, just uncomment the elastic stage (and configure the
+# master accordingly).
+stages:
+
+  # # elastic is a predefined type of stage for running elasticsearch.
+  # - elastic:
+  #     # container_name: determined_elastic
+  #     # image_name: elasticsearch:7.14.0
+  #     # api_port: 9200
+  #     # elastic_port: 9300
+  #     # environment:
+  #     #   discovery.type: "single-node"
+  #     #   cluster.routing.allocation.disk.threshold_enabled: "false"
+  #     #   logger.level: "WARN"
+
+  #     # data_dir is where the persistent files will be saved to.  If this key
+  #     # is not present, the elastic logs will not persist at all.
+  #     data_dir: ~/.elastic
+
+  # db is a predefined type of stage specific to how determined runs postgres.
+  - db:
+      # port: 5432
+      # db_name: determined
+      # password: postgres
+      # container_name: determined_db
+      # image_name: "postgres:10.14"
+      # cmdline: ["postgres"]
+
+      # data_dir is where the persistent files will be saved to.  If this key
+      # is not present, the database will not persist at all.
+      data_dir: ~/.postgres
+
+  # master is a predefined type of stage for to how determined runs the master.
+  - master:
+      # pre is a set of precommands to be run before starting the master.
+      # In this case those commands are just a few make targets, specified
+      # as shell commands.
+      pre:
+        - sh: make -C proto build
+        - sh: make -C master build
+        - sh: make -C tools prep-root
+        - sh: mkdir -p /tmp/determined-cp
+
+      # cmdline has the special property that the ":config" string will be
+      # replaced with a temporary file containing the contents of the
+      # config_file field.
+      # cmdline:
+      #   - master/build/determined-master
+      #   - --config-file
+      #   - :config
+
+      # post is the set of postcommands to run after starting the master, before
+      # considering it "ready".  You probably never have to change this.
+      # post:
+      #   - logcheck:
+      #       regex: accepting incoming connections on port
+
+      # config_file is the most important config detail for the master stage.
+      # It is literally just master.yaml.
+      config_file:
+        db:
+          host: localhost
+          port: 5432
+          password: postgres
+          user: postgres
+          name: determined
+        checkpoint_storage:
+          type: shared_fs
+          host_path: /tmp/determined-cp
+        log:
+          level: debug
+        # This is important: we have to use the symbolic links in the
+        # tools/build directory to run properly.
+        root: tools/build
+        # logging:
+        #   type: elastic
+        #   host: 127.0.0.1
+        #   port: 9200
+
+  - agent:
+      # If you have multiple agent stages, they should have different names.
+      # name: agent
+
+      # cmdline:
+      #   - agent/build/determined-agent
+      #   - run
+      #   - --config-file
+      #   - :config
+
+      pre:
+        - sh: make -C agent build
+      config_file:
+        master_host: 127.0.0.1
+        master_port: 8080
+        # devcluster will set $DOCKER_LOCALHOST to host.docker.internal on macos
+        # and to your computer's external ip address on linux.
+        container_master_host: $DOCKER_LOCALHOST
+
+        # This is a useful setting for testing single-node dtrain on a laptop.
+        # artificial_slots: 8
+
+
+# Example: Introduce a second, non-conflicting agent to test dtrain locally.
+# - agent:
+#     # Each agent stage should have a unique name for devcluster.
+#     name: agent2
+#     pre:
+#       - sh: make -C agent build
+#     config_file:
+#       master_host: 127.0.0.1
+#       master_port: 8080
+#       container_master_host: $DOCKER_LOCALHOST
+#       # Often dtrain clusters have multiple gpus per agent.
+#       artificial_slots: 8
+#       # Each agent needs a unique agent_id.
+#       agent_id: agent2
+#       # Each agent needs a deconflicting fluent container
+#       fluent:
+#         port: 24225  # default value is 24224
+#         container_name: determined-fluent-2
+
+
+# Example: a totally custom stage.  This one runs a static http server.
+# - custom:
+#     # name is required for custom stages
+#     name: http
+#     # cwd (optional), which dir to run the command from
+#     cwd: ~/http-files
+#     # cmd is a list of strings
+#     cmd: ["python", "-m", "http.server"]
+#     # env (optional), environment variables to set for this process
+#     # env:
+#     #   VARIABLE_NAME: variable_value
+#
+#     # pre (optional), actions to take before running the stage.  Allowable
+#     # entries are `sh` (a single string) or `custom` (a list of strings).
+#     # Each value will run in order and must exit 0 in order to proceed with
+#     # the stage.
+#     # pre:
+#     #   - sh: echo hello world
+#     #   - custom: ["echo", "hello", "world"]
+#
+#     # post (optional), actions to take after starting the stage but before
+#     # the stage is considered "ready".  The `sh` and `custom` types from
+#     # the `pre` config are allowed here, as well as two special entries:
+#     #  - logcheck: wait for a match to a regex pattern from process logs
+#     #  - conncheck: repeatedly try to connect to a port until it succeeds
+#     post:
+#       - conncheck:
+#           # port is required
+#           port: 8000
+#           # host defaults to "localhost"
+#           # host: localhost
+#       # You could use this logcheck instead of the above conncheck:
+#       # - logcheck:
+#       #     regex: 'Serving HTTP on .* port'
+#       #     # you can watch for logs on a different stage name, if needed
+#       #     # stream: http
+
+
+# Example: a totally custom stage in docker.  Another static http server.
+# - custom_docker:
+#     # name is required for custom_docker stages
+#     name: http_docker
+#     # container_name is required
+#     container_name: http_docker
+#     # run_args is a list of strings to `docker container run`
+#     run_args:
+#       # options for docker run
+#       - "-p"
+#       - "8001:8000"
+#       # image name
+#       - "python"
+#       # command + args
+#       - "python"
+#       - "-m"
+#       - "http.server"
+#     # kill_signal determines how we shut down the container.  Some containers
+#     # (like postgres) prefer TERM to KILL.
+#     # kill_signal: KILL
+#     # pre and post are configured identically.  They do not run in docker.
+#     post:
+#       - conncheck:
+#           port: 8001
