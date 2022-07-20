@@ -32,6 +32,14 @@ commands:
   # q: :quit
   # " ": :marker  # spacebar
 
+  # These magic commands are available but not installed by default:
+  # z: :kill-stage:1
+  # x: :kill-stage:2
+  # c: :kill-stage:3
+  # Z: :restart-stage:1
+  # X: :restart-stage:2
+  # C: :restart-stage:3
+
 # stages is the configuration of the whole cluster.  Each stage must be
 # completed before moving to the next stage, so order matters.  If you want to
 # add an elastic stage, just uncomment the elastic stage (and configure the
