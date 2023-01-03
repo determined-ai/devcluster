@@ -356,7 +356,7 @@ class MasterConfig(StageConfig):
 
 class AgentConfig(StageConfig):
     def __init__(self, config: typing.Any, temp_dir: str) -> None:
-        allowed = {"pre", "cmdline", "config_file", "name"}
+        allowed = {"pre", "cmdline", "config_file", "name", "log_level"}
         required = set()  # type: typing.Set[str]
         check_keys(allowed, required, config, type(self).__name__)
 
@@ -374,7 +374,10 @@ class AgentConfig(StageConfig):
             "cmdline",
             ["agent/build/determined-agent", "run", "--config-file", ":config"],
         )
+
         self.cmdline = [read_path(s) for s in self.cmdline]
+
+        self.cmdline.extend(["--log-level", config.get("log_level", "INFO")])
 
         self.name = config.get("name", "agent")
         self.temp_dir = temp_dir
