@@ -1,6 +1,6 @@
 -e .
 
-black>=20.8b1
+black==22.3.0
 mypy==0.780
 flake8>=3.8.0
 flake8-bugbear>=19.8.0
