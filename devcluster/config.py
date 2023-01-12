@@ -474,12 +474,6 @@ class CustomConfig(StageConfig):
         self.cwd = read_path(config.get("cwd"))
         if self.cwd is not None:
             assert isinstance(self.cwd, str), "CustomConfig.name must be a string"
-            assert os.path.exists(
-                self.cwd
-            ), f"cwd setting not valid, {self.cwd} does not exist"
-            assert os.path.isdir(
-                self.cwd
-            ), f"cwd setting not valid, {self.cwd} is not a directory"
 
         check_list_of_dicts(
             config.get("pre", []), "CustomConfig.pre must be a list of dicts"
