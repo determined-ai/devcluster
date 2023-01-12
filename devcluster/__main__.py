@@ -16,20 +16,18 @@ import devcluster as dc
 
 
 # prefer stdlib importlib.resources over pkg_resources, when available
-try:
-    import importlib.resources
+@typing.no_type_check
+def _get_example_yaml() -> bytes:
+    try:
+        from importlib.resources import files  # type: ignore
 
-    resources = importlib.resources  # type: typing.Any
-
-    def _get_example_yaml() -> bytes:
-        ref = resources.files("devcluster").joinpath("example.yaml")
+        ref = files("devcluster").joinpath("example.yaml")
         with ref.open("rb") as f:
-            return f.read()  # type: ignore
+            return f.read()
 
-except ImportError:
-    import pkg_resources
+    except ImportError:
+        import pkg_resources
 
-    def _get_example_yaml() -> bytes:
         return pkg_resources.resource_string("devcluster", "example.yaml")
 
 
@@ -187,7 +185,17 @@ def main() -> None:
         env["DOCKER_LOCALHOST"] = docker_localhost
 
     with open(config_path) as f:
-        config = dc.Config(dc.expand_env(yaml.safe_load(f.read()), env))
+        config_body = yaml.safe_load(f.read())
+        if config_body is None:
+            print(f"config file '{config_path}' is an empty file!", file=sys.stderr)
+            sys.exit(1)
+        if not isinstance(config_body, dict):
+            print(
+                f"config file '{config_path}' does not represent a dict!",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        config = dc.Config(dc.expand_env(config_body, env))
 
     # Process cwd.
     cwd_path = None
