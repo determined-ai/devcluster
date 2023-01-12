@@ -9,6 +9,9 @@ stages:
       pre:
         - sh: make -C master build
         - sh: make -C tools prep-root
+      post:
+        - conncheck:
+            port: 8080
       config_file:
         db:
           host: localhost
