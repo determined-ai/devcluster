@@ -303,7 +303,7 @@ class DBConfig(StageConfig):
 
 class MasterConfig(StageConfig):
     def __init__(self, config: typing.Any, temp_dir: str) -> None:
-        allowed = {"pre", "post", "cmdline", "config_file", "name"}
+        allowed = {"pre", "post", "cmdline", "config_file", "name", "kill_signal"}
         required = set()  # type: typing.Set[str]
         check_keys(allowed, required, config, type(self).__name__)
 
@@ -329,6 +329,8 @@ class MasterConfig(StageConfig):
         self.name = config.get("name", "master")
         self.temp_dir = temp_dir
 
+        self.kill_signal = config.get("kill_signal", None)
+
     def build_stage(
         self,
         poll: "dc.Poll",
@@ -348,6 +350,7 @@ class MasterConfig(StageConfig):
                 "name": self.name,
                 "pre": self.pre,
                 "post": self.post,
+                "kill_signal": self.kill_signal,
             }
         )
 
@@ -356,7 +359,7 @@ class MasterConfig(StageConfig):
 
 class AgentConfig(StageConfig):
     def __init__(self, config: typing.Any, temp_dir: str) -> None:
-        allowed = {"pre", "cmdline", "config_file", "name"}
+        allowed = {"pre", "cmdline", "config_file", "name", "kill_signal"}
         required = set()  # type: typing.Set[str]
         check_keys(allowed, required, config, type(self).__name__)
 
@@ -379,6 +382,8 @@ class AgentConfig(StageConfig):
         self.name = config.get("name", "agent")
         self.temp_dir = temp_dir
 
+        self.kill_signal = config.get("kill_signal", None)
+
     def build_stage(
         self,
         poll: "dc.Poll",
@@ -392,7 +397,14 @@ class AgentConfig(StageConfig):
 
         cmd = [config_path if arg == ":config" else arg for arg in self.cmdline]
 
-        custom_config = CustomConfig({"cmd": cmd, "name": self.name, "pre": self.pre})
+        custom_config = CustomConfig(
+            {
+                "cmd": cmd,
+                "name": self.name,
+                "pre": self.pre,
+                "kill_signal": self.kill_signal,
+            }
+        )
 
         return dc.Process(custom_config, poll, logger, state_machine, process_tracker)
 
@@ -456,7 +468,7 @@ class ShellAtomicConfig(AtomicConfig):
 
 class CustomConfig(StageConfig):
     def __init__(self, config: typing.Any) -> None:
-        allowed = {"cmd", "name", "env", "cwd", "pre", "post"}
+        allowed = {"cmd", "name", "env", "cwd", "pre", "post", "kill_signal"}
         required = {"cmd", "name"}
 
         check_keys(allowed, required, config, type(self).__name__)
@@ -465,6 +477,8 @@ class CustomConfig(StageConfig):
         check_list_of_strings(self.cmd, "CustomConfig.cmd must be a list of strings")
 
         self.name = check_string(config["name"], "CustomConfig.name must be a string")
+
+        self.kill_signal = config.get("kill_signal", None)
 
         self.env = config.get("env", {})
         check_dict_with_string_keys(

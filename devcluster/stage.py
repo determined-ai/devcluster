@@ -252,10 +252,12 @@ class Process(BaseProcess):
         # kill via signal
         self.dying = True
         assert self.proc
-        if sig is None:
-            self.proc.kill()
-        else:
+        if sig is not None:
             self.proc.send_signal(sig)
+        elif self.config.kill_signal is not None:
+            self.proc.send_signal(signal.Signals[self.config.kill_signal])
+        else:
+            self.proc.kill()
 
 
 class DockerProcess(BaseProcess):
