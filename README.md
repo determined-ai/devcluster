@@ -121,7 +121,7 @@ to indicate when the cluster is ready for use.
 arbitrary versions of the Determined cluster.  It is tested as far back as
 v0.12.3.
 
-Some defaults are kept up-to-date with tip-of-master to simplify the config
+Some defaults are kept up-to-date with tip-of-main to simplify the config
 file for the most-common use case, but in general preference was given to being
 configurable and explicit.
 
