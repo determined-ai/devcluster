@@ -7,16 +7,16 @@ import os
 import subprocess
 import re
 import sys
-import yaml
-import typing
+from typing import Iterator, no_type_check, Optional, Sequence
 
 import appdirs
+import yaml
 
 import devcluster as dc
 
 
 # prefer stdlib importlib.resources over pkg_resources, when available
-@typing.no_type_check
+@no_type_check
 def _get_example_yaml() -> bytes:
     try:
         from importlib.resources import files  # type: ignore
@@ -32,7 +32,7 @@ def _get_example_yaml() -> bytes:
 
 
 @contextlib.contextmanager
-def lockfile(filename: str) -> typing.Iterator[None]:
+def lockfile(filename: str) -> Iterator[None]:
     with open(filename, "w") as f:
         try:
             fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -48,7 +48,7 @@ def lockfile(filename: str) -> typing.Iterator[None]:
             fcntl.flock(f, fcntl.LOCK_UN)
 
 
-def get_host_addr_for_docker() -> typing.Optional[str]:
+def get_host_addr_for_docker() -> Optional[str]:
     if "darwin" in sys.platform:
         # On macOS, docker runs in a VM and host.docker.internal points to the IP
         # address of this VM.
@@ -63,14 +63,14 @@ def get_host_addr_for_docker() -> typing.Optional[str]:
     s = subprocess.check_output(proxy_addr_args, encoding="utf-8")
     matches = re.match(pattern, s)
     if matches is not None:
-        groups: typing.Sequence[str] = matches.groups()
+        groups: Sequence[str] = matches.groups()
         if len(groups) != 0:
             return groups[0]
 
     return None
 
 
-def maybe_install_default_config() -> typing.Optional[str]:
+def maybe_install_default_config() -> Optional[str]:
     # Don't bother asking the user if the user isn't able to tell us.
     if not sys.stdin.isatty():
         return None

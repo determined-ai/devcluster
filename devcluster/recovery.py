@@ -1,7 +1,7 @@
 import json
 import os
 import subprocess
-import typing
+from typing import Any, Optional
 
 import devcluster as dc
 
@@ -20,7 +20,7 @@ class ProcessTracker:
         self.temp_dir = temp_dir
         # Process list is ordered so that when we recover a crashed devcluster,
         # we can clean up the processes in reverse order of when they started.
-        self.running = []  # type: typing.Any
+        self.running = []  # type: Any
 
     def _update_file(self) -> None:
         path = os.path.join(self.temp_dir, "running.json")
@@ -65,7 +65,7 @@ class ProcessTracker:
                     logger.log(msg)
 
 
-def recover_process(pid: int, match_args: str) -> typing.Optional[str]:
+def recover_process(pid: int, match_args: str) -> Optional[str]:
     """Detect/kill a dangling process from an earlier devluster."""
     # ps args, formatting, and exit code all tested on mac and linux
     cmd = ["ps", "-p", str(pid), "-o", "command"]
@@ -86,7 +86,7 @@ def recover_process(pid: int, match_args: str) -> typing.Optional[str]:
     return f"killed old pid {pid} running '{match_args}'\n"
 
 
-def recover_container(container_id: str) -> typing.Optional[str]:
+def recover_container(container_id: str) -> Optional[str]:
     """Detect/kill a dangling container from an earlier devcluster."""
     cmd = [
         "docker",

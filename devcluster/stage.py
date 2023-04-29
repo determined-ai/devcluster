@@ -4,7 +4,7 @@ import selectors
 import signal
 import subprocess
 import time
-import typing
+from typing import Any, List, Optional
 
 import devcluster as dc
 
@@ -28,7 +28,7 @@ class Stage:
         return self.running()
 
     @abc.abstractmethod
-    def kill(self, sig: typing.Optional[signal.Signals] = None) -> None:
+    def kill(self, sig: Optional[signal.Signals] = None) -> None:
         pass
 
     @abc.abstractmethod
@@ -36,12 +36,12 @@ class Stage:
         pass
 
     @abc.abstractmethod
-    def get_precommand(self) -> typing.Optional[dc.AtomicOperation]:
+    def get_precommand(self) -> Optional[dc.AtomicOperation]:
         """Return the next AtomicOperation or None, at which point it is safe to run_command)."""
         pass
 
     @abc.abstractmethod
-    def get_postcommand(self) -> typing.Optional[dc.AtomicOperation]:
+    def get_postcommand(self) -> Optional[dc.AtomicOperation]:
         """Return the next AtomicOperation or None, at which point the command is up."""
         pass
 
@@ -67,17 +67,17 @@ class DeadStage(Stage):
     def crashed(self) -> bool:
         return False
 
-    def kill(self, sig: typing.Optional[signal.Signals] = None) -> None:
+    def kill(self, sig: Optional[signal.Signals] = None) -> None:
         self._running = False
         self.state_machine.next_thing()
 
     def reset(self) -> None:
         pass
 
-    def get_precommand(self) -> typing.Optional[dc.AtomicOperation]:
+    def get_precommand(self) -> Optional[dc.AtomicOperation]:
         pass
 
-    def get_postcommand(self) -> typing.Optional[dc.AtomicOperation]:
+    def get_postcommand(self) -> Optional[dc.AtomicOperation]:
         pass
 
     def log_name(self) -> str:
@@ -95,12 +95,12 @@ class BaseProcess(Stage, metaclass=abc.ABCMeta):
         logger: dc.Logger,
         state_machine: dc.StateMachine,
         name: str,
-        pre: typing.List[dc.AtomicConfig],
-        post: typing.List[dc.AtomicConfig],
+        pre: List[dc.AtomicConfig],
+        post: List[dc.AtomicConfig],
     ) -> None:
-        self.proc = None  # type: typing.Optional[subprocess.Popen]
-        self.out = None  # type: typing.Optional[int]
-        self.err = None  # type: typing.Optional[int]
+        self.proc = None  # type: Optional[subprocess.Popen]
+        self.out = None  # type: Optional[int]
+        self.err = None  # type: Optional[int]
         self.dying = False
 
         self.poll = poll
@@ -158,7 +158,7 @@ class BaseProcess(Stage, metaclass=abc.ABCMeta):
             self.err = None
             self._maybe_wait()
 
-    def get_precommand(self) -> typing.Optional[dc.AtomicOperation]:
+    def get_precommand(self) -> Optional[dc.AtomicOperation]:
         if self.precmds_run < len(self.pre):
             precmd_config = self.pre[self.precmds_run]
             self.precmds_run += 1
@@ -171,7 +171,7 @@ class BaseProcess(Stage, metaclass=abc.ABCMeta):
             )
         return None
 
-    def get_postcommand(self) -> typing.Optional[dc.AtomicOperation]:
+    def get_postcommand(self) -> Optional[dc.AtomicOperation]:
         if self.postcmds_run < len(self.post):
             postcmd_config = self.post[self.postcmds_run]
             self.postcmds_run += 1
@@ -248,7 +248,7 @@ class Process(BaseProcess):
             self.proc.pid, " ".join(self.config.cmd)
         )
 
-    def kill(self, sig: typing.Optional[signal.Signals] = None) -> None:
+    def kill(self, sig: Optional[signal.Signals] = None) -> None:
         # kill via signal
         self.dying = True
         assert self.proc
@@ -292,7 +292,7 @@ class DockerProcess(BaseProcess):
             self.container_id = stdout.strip().decode("utf8")
             self.process_tracker.report_container_started(self.container_id)
 
-    def get_precommand(self) -> typing.Optional[dc.AtomicOperation]:
+    def get_precommand(self) -> Optional[dc.AtomicOperation]:
         # Inherit the precmds behavior from Process.
         precmd = super().get_precommand()
         if precmd is not None:
@@ -346,7 +346,7 @@ class DockerProcess(BaseProcess):
 
         self.process_tracker.report_pid_started(self.proc.pid, "docker container logs")
 
-    def docker_wait(self, timeout: typing.Optional[float] = None) -> int:
+    def docker_wait(self, timeout: Optional[float] = None) -> int:
         # Wait for the container.
         self.docker_started = False
 
@@ -453,7 +453,7 @@ class DockerProcess(BaseProcess):
 
         return self.docker_wait()
 
-    def kill(self, sig: typing.Optional[signal.Signals] = None) -> None:
+    def kill(self, sig: Optional[signal.Signals] = None) -> None:
         self.dying = True
         sigstr = self.config.kill_signal if sig is None else str(sig.value)
         kill_cmd = [
@@ -482,7 +482,7 @@ class DockerProcess(BaseProcess):
             self.state_machine.next_thing()
 
 
-def readall_with_timeout(f: typing.Any, timeout: float) -> bytes:
+def readall_with_timeout(f: Any, timeout: float) -> bytes:
     """Use selectors to read from a file descriptor with a timeout."""
     dc.nonblock(f)
     now = time.time()
