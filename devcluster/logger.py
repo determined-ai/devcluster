@@ -44,7 +44,7 @@ class Logger:
             self.streams = init_streams
 
         if init_index is None:
-            self.index = {i: stream for i, stream in enumerate(all_streams)}
+            self.index = dict(enumerate(all_streams))
         else:
             self.index = init_index
 
