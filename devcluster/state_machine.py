@@ -4,18 +4,18 @@ import os
 import signal
 import subprocess
 import time
-import typing
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import devcluster as dc
 
 
-CommandEndCB = typing.Callable[["Command"], None]
+CommandEndCB = Callable[["Command"], None]
 
 
 class Command:
     def __init__(
         self,
-        command: typing.Union[str, typing.List[str]],
+        command: Union[str, List[str]],
         logger: dc.Logger,
         poll: dc.Poll,
         end_cb: CommandEndCB,
@@ -39,8 +39,8 @@ class Command:
             stderr=subprocess.PIPE,
         )
         assert self.p.stdout and self.p.stderr
-        self.out = self.p.stdout.fileno()  # type: typing.Optional[int]
-        self.err = self.p.stderr.fileno()  # type: typing.Optional[int]
+        self.out = self.p.stdout.fileno()  # type: Optional[int]
+        self.err = self.p.stderr.fileno()  # type: Optional[int]
         self.poll.register(self.out, dc.Poll.IN_FLAGS, self._handle_out)
         self.poll.register(self.err, dc.Poll.IN_FLAGS, self._handle_err)
 
@@ -106,13 +106,13 @@ class Status:
         self,
         state_idx: int,
         target_idx: int,
-        stages: typing.Sequence[StageStatus],
+        stages: Sequence[StageStatus],
     ) -> None:
         self.state_idx = state_idx
         self.target_idx = target_idx
         self.stages = stages
 
-    def to_dict(self) -> typing.Any:
+    def to_dict(self) -> Any:
         return {
             "state_idx": self.state_idx,
             "target_idx": self.target_idx,
@@ -120,7 +120,7 @@ class Status:
         }
 
     @classmethod
-    def from_dict(self, j: typing.Any) -> "Status":
+    def from_dict(self, j: Any) -> "Status":
         return Status(
             state_idx=j["state_idx"],
             target_idx=j["target_idx"],
@@ -128,9 +128,9 @@ class Status:
         )
 
 
-StatusCB = typing.Callable[[Status], None]
-ReportCB = typing.Callable[[], None]
-KillRequest = typing.Tuple[int, typing.Optional[signal.Signals]]
+StatusCB = Callable[[Status], None]
+ReportCB = Callable[[], None]
+KillRequest = Tuple[int, Optional[signal.Signals]]
 
 
 class StateMachineHandle:
@@ -140,12 +140,12 @@ class StateMachineHandle:
 
     def __init__(
         self,
-        set_target_or_restart: typing.Callable[[int], None],
-        run_command: typing.Callable[[str], None],
-        quit_cb: typing.Callable[[], None],
-        dump_state: typing.Callable[[], None],
-        kill_stage: typing.Callable[[int], None],
-        restart_stage: typing.Callable[[int], None],
+        set_target_or_restart: Callable[[int], None],
+        run_command: Callable[[str], None],
+        quit_cb: Callable[[], None],
+        dump_state: Callable[[], None],
+        kill_stage: Callable[[int], None],
+        restart_stage: Callable[[int], None],
     ):
         self.set_target_or_restart = set_target_or_restart
         self.run_command = run_command
@@ -160,7 +160,7 @@ class StateMachine:
         self,
         logger: dc.Logger,
         poll: dc.Poll,
-        command_configs: typing.Dict[str, dc.CommandConfig],
+        command_configs: Dict[str, dc.CommandConfig],
     ) -> None:
         self.logger = logger
         self.poll = poll
@@ -170,7 +170,7 @@ class StateMachine:
 
         # atomic_op is intermediate steps like calling `make` or connecting to a server.
         # We only support having one run at a time (since they're atomic...)
-        self.atomic_op = None  # type: typing.Optional[dc.AtomicOperation]
+        self.atomic_op = None  # type: Optional[dc.AtomicOperation]
 
         # the pipe is used by the atomic_op to pass messages to the poll loop
         self.pipe_rd, self.pipe_wr = os.pipe()
@@ -178,13 +178,13 @@ class StateMachine:
         dc.nonblock(self.pipe_wr)
         poll.register(self.pipe_rd, dc.Poll.IN_FLAGS, self.handle_pipe)
 
-        self.stages = [dc.DeadStage(self)]  # type: typing.List[dc.Stage]
+        self.stages = [dc.DeadStage(self)]  # type: List[dc.Stage]
         # state is the current stage we are running
         self.state = 0
         # target is the stage the user has requested we run
         self.target = 0
         # standing_up is the stage we are standing up (there is only one at a time)
-        self.standing_up = None  # type: typing.Optional[int]
+        self.standing_up = None  # type: Optional[int]
         # when somebody sets the target state to something lower than standing_up, we
         # cancel the currently standing_up as it is no longer wanted.  We can't infer
         # that case though, because the devcluster API lets you restart things in
@@ -202,19 +202,19 @@ class StateMachine:
         self.stage_up = [False]
 
         # we queue up restart requests to handle them one at a time.
-        self.want_restarts = []  # type: typing.List[int]
+        self.want_restarts = []  # type: List[int]
 
         # we sometimes queue up kill requests because it's not always safe to kill immediately
-        self.want_kills = []  # type: typing.List[KillRequest]
+        self.want_kills = []  # type: List[KillRequest]
 
-        self.old_status = None  # type: typing.Any
+        self.old_status = None  # type: Any
 
-        self.callbacks = []  # type: typing.List[StatusCB]
+        self.callbacks = []  # type: List[StatusCB]
 
-        self.report_callbacks = {}  # type: typing.Dict[str, ReportCB]
+        self.report_callbacks = {}  # type: Dict[str, ReportCB]
 
         # commands maps the UI key to the command
-        self.commands = {}  # type: typing.Dict[str, Command]
+        self.commands = {}  # type: Dict[str, Command]
 
     def dump_state(self) -> None:
         """Useful for debugging the state machine if the state machine deadlocks."""
@@ -500,9 +500,7 @@ class StateMachine:
         self.want_restarts.append(target)
         self.next_thing()
 
-    def kill_stage(
-        self, target: int, sig: typing.Optional[signal.Signals] = None
-    ) -> None:
+    def kill_stage(self, target: int, sig: Optional[signal.Signals] = None) -> None:
         self.want_kills.append((target, sig))
         self.next_thing()
 

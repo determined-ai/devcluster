@@ -5,7 +5,7 @@ import threading
 import time
 import socket
 import subprocess
-import typing
+from typing import Any, Callable, List, Optional, Sequence, Union
 
 import devcluster as dc
 
@@ -90,7 +90,7 @@ class LogCheck(AtomicOperation):
         logger: dc.Logger,
         stream: str,
         report_fd: int,
-        regex: typing.Union[str, bytes],
+        regex: Union[str, bytes],
     ):
         self.logger = logger
         self.stream = stream
@@ -126,7 +126,7 @@ class LogCheck(AtomicOperation):
 
 
 # AtomicCB(success: bool, stdout: bytes) -> None
-AtomicCB = typing.Callable[[bool, bytes], None]
+AtomicCB = Callable[[bool, bytes], None]
 
 
 class AtomicSubprocess(AtomicOperation):
@@ -136,9 +136,9 @@ class AtomicSubprocess(AtomicOperation):
         logger: dc.Logger,
         stream: str,
         report_fd: int,
-        cmd: typing.List[str],
+        cmd: List[str],
         quiet: bool = False,
-        callbacks: typing.Sequence[AtomicCB] = (),
+        callbacks: Sequence[AtomicCB] = (),
     ) -> None:
         self.poll = poll
         self.logger = logger
@@ -146,7 +146,7 @@ class AtomicSubprocess(AtomicOperation):
         self.report_fd = report_fd
         self.quiet = quiet
         self.callbacks = callbacks
-        self.captured_stdout = []  # type: typing.List[bytes]
+        self.captured_stdout = []  # type: List[bytes]
 
         self.start_time = time.time()
 
@@ -156,11 +156,11 @@ class AtomicSubprocess(AtomicOperation):
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-        )  # type: typing.Optional[subprocess.Popen]
+        )  # type: Optional[subprocess.Popen]
         assert self.proc.stdout
-        self.out = self.proc.stdout.fileno()  # type: typing.Optional[int]
+        self.out = self.proc.stdout.fileno()  # type: Optional[int]
         assert self.proc.stderr
-        self.err = self.proc.stderr.fileno()  # type: typing.Optional[int]
+        self.err = self.proc.stderr.fileno()  # type: Optional[int]
 
         if self.out is not None:
             dc.nonblock(self.out)
@@ -231,7 +231,7 @@ class AtomicSubprocess(AtomicOperation):
 
 
 class DockerRunAtomic(AtomicSubprocess):
-    def __init__(self, *args: typing.Any, **kwargs: typing.Any) -> None:
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         kwargs["quiet"] = True
         super().__init__(*args, **kwargs)
 

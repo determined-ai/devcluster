@@ -5,7 +5,7 @@ import termios
 import subprocess
 import select
 import sys
-import typing
+from typing import Any, Callable, Dict, Iterator, Union
 
 
 class ImpossibleException(Exception):
@@ -14,7 +14,7 @@ class ImpossibleException(Exception):
     pass
 
 
-Text = typing.Union[str, bytes]
+Text = Union[str, bytes]
 
 
 def asbytes(msg: Text) -> bytes:
@@ -41,7 +41,6 @@ def back_num(num: int) -> bytes:
 # "res"et coloring in terminal.
 res = b"\x1b[m"
 
-
 _has_csr = None
 
 
@@ -61,7 +60,7 @@ def has_csr() -> bool:
 
 
 @contextlib.contextmanager
-def terminal_config() -> typing.Iterator[None]:
+def terminal_config() -> Iterator[None]:
     fd = sys.stdin.fileno()
     # old and new are of the form [iflag, oflag, cflag, lflag, ispeed, ospeed, cc]
     old = termios.tcgetattr(fd)
@@ -103,7 +102,7 @@ def terminal_config() -> typing.Iterator[None]:
         os.write(sys.stdout.fileno(), b"\x1b[?1049l")
 
 
-Handler = typing.Callable[[int, int], None]
+Handler = Callable[[int, int], None]
 
 
 class Poll:
@@ -112,9 +111,9 @@ class Poll:
 
     def __init__(self) -> None:
         # Maps file descriptors to handler functions.
-        self.handlers = {}  # type: typing.Dict[int, Handler]
+        self.handlers = {}  # type: Dict[int, Handler]
         # Maps handlers back to file descriptors.
-        self.fds = {}  # type: typing.Dict[Handler, int]
+        self.fds = {}  # type: Dict[Handler, int]
         self._poll = select.poll()
 
     def register(self, fd: int, flags: int, handler: Handler) -> None:
@@ -128,7 +127,7 @@ class Poll:
         del self.fds[handler]
         del self.handlers[fd]
 
-    def poll(self, *args: typing.Any, **kwargs: typing.Any) -> None:
+    def poll(self, *args: Any, **kwargs: Any) -> None:
         ready = self._poll.poll()
         for fd, ev in ready:
             handler = self.handlers[fd]
