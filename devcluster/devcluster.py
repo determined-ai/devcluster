@@ -69,9 +69,9 @@ class Devcluster:
             name: i for i, name in enumerate(self._stage_names)
         }  # type: typing.Dict[typing.Union[str, int], int]
         self._stage_map.update({i: i for i in range(len(self._stage_names))})
-        self._target_map = {
-            i: name for i, name in enumerate(self._stage_names)
-        }  # type: typing.Dict[typing.Union[str, int], str]
+        self._target_map = dict(
+            enumerate(self._stage_names)
+        )  # type: typing.Dict[typing.Union[str, int], str]
         self._target_map.update(
             {name: name for i, name in enumerate(self._stage_names)}
         )
