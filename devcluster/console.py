@@ -152,9 +152,7 @@ class Console:
         )
 
         if self.scroll:
-            prebar_bytes += (
-                dc.fore_num(3) + b"(scrolling, 'x' to return to bottom)" + dc.res
-            )
+            prebar_bytes += dc.fore_num(3) + b"(scrolling, 'x' to return to bottom)" + dc.res
 
         self.print_bar(prebar_bytes)
 
@@ -323,9 +321,7 @@ class Console:
             self.act_marker()
         else:
             self.logger.log(
-                dc.fore_num(9)
-                + dc.asbytes(f'"{key}" is not a known shortcut\n')
-                + dc.res
+                dc.fore_num(9) + dc.asbytes(f'"{key}" is not a known shortcut\n') + dc.res
             )
 
     def handle_stdin(self, ev: int, _: int) -> None:

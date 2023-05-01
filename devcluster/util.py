@@ -48,9 +48,7 @@ def has_csr() -> bool:
     global _has_csr
     if _has_csr is None:
         try:
-            p = subprocess.run(
-                ["infocmp"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
-            )
+            p = subprocess.run(["infocmp"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
             p.check_returncode()
             # We only handle one form of change_scroll_region.
             _has_csr = b"csr=\\E[%i%p1%d;%p2%dr," in p.stdout

@@ -69,12 +69,8 @@ class Devcluster:
             name: i for i, name in enumerate(self._stage_names)
         }  # type: Dict[Union[str, int], int]
         self._stage_map.update({i: i for i in range(len(self._stage_names))})
-        self._target_map = dict(
-            enumerate(self._stage_names)
-        )  # type: Dict[Union[str, int], str]
-        self._target_map.update(
-            {name: name for i, name in enumerate(self._stage_names)}
-        )
+        self._target_map = dict(enumerate(self._stage_names))  # type: Dict[Union[str, int], str]
+        self._target_map.update({name: name for i, name in enumerate(self._stage_names)})
 
         self._tmp = None  # type: Optional[str]
         self._proc = None  # type: Optional[subprocess.Popen]
@@ -102,9 +98,7 @@ class Devcluster:
         Raise a DevclusterError if the devcluster process has died.
         """
         if self._proc is None:
-            raise ValueError(
-                "health_check() is not meaningful before .start() or after .close()"
-            )
+            raise ValueError("health_check() is not meaningful before .start() or after .close()")
         if self._proc.poll() is not None:
             raise DevclusterError("process has died")
         if self._sock_failed:
@@ -188,9 +182,7 @@ class Devcluster:
             stderr += line
         else:
             self.close()
-            raise RuntimeError(
-                "devcluster failed on startup:\n" + stderr.decode("utf8")
-            )
+            raise RuntimeError("devcluster failed on startup:\n" + stderr.decode("utf8"))
 
         # Connect to the devcluster subprocess and start processing events.
         self._sock = dc.connection_from_spec(sock_path)
