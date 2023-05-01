@@ -1,0 +1,12 @@
+# Ignore these commits when reporting with blame
+#
+# Either pass this file in to git blame manually with
+#   --ignore-revs-file .git-blame-ignore-revs
+# or configure git to ignore these revisions every time by
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# Import typing symbols directly into namespace
+abc78c2779ea85a14abc3b422bf420fd1ff8223c
+
+# Black formatting to 100-column lines
+6abc4af2bf56c2b7fc9c44f1f6c962717e10482d
