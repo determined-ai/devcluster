@@ -27,9 +27,7 @@ class Command:
         self.logger = logger
         self.poll = poll
         self.end_cb = end_cb
-        self.logger.log(
-            dc.fore_num(3) + dc.asbytes(b"starting `%s`\n" % self.cmd_str) + dc.res
-        )
+        self.logger.log(dc.fore_num(3) + dc.asbytes(b"starting `%s`\n" % self.cmd_str) + dc.res)
         self.start = time.time()
         self.p = subprocess.Popen(
             command,

@@ -34,9 +34,7 @@ class ProcessTracker:
         self._update_file()
 
     def report_container_killed(self, container_id: str) -> None:
-        self.running = list(
-            filter(lambda p: p.get("container_id") != container_id, self.running)
-        )
+        self.running = list(filter(lambda p: p.get("container_id") != container_id, self.running))
         self._update_file()
 
     def report_pid_started(self, pid: int, match_args: str) -> None:

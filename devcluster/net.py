@@ -324,9 +324,7 @@ class Server:
             # accept a connection
             l = self.listeners[fd]
             sock, _ = l.accept()
-            client = Connection(
-                self.poll, sock, self.jmsg_cb, self.client_conn_close_cb
-            )
+            client = Connection(self.poll, sock, self.jmsg_cb, self.client_conn_close_cb)
             self.clients.add(client)
             # start by sending some initial state
             init = {
@@ -407,9 +405,7 @@ class ConsoleClient:
 
         self.poll = dc.Poll()
 
-        self.logger = dc.Logger(
-            init["stages"], None, init["logger_streams"], init["logger_index"]
-        )
+        self.logger = dc.Logger(init["stages"], None, init["logger_streams"], init["logger_index"])
         state_machine_handle = dc.StateMachineHandle(
             self.set_target_or_restart,
             self.run_command,

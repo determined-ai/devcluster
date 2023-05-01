@@ -132,9 +132,7 @@ class BaseProcess(Stage, metaclass=abc.ABCMeta):
         if self.out is None and self.err is None:
             ret = self.wait()
             self.logger.log(f"{self.log_name()} exited with {ret}\n")
-            self.logger.log(
-                f" ----- {self.log_name()} exited with {ret} -----\n", self.log_name()
-            )
+            self.logger.log(f" ----- {self.log_name()} exited with {ret} -----\n", self.log_name())
             self.proc = None
             self.state_machine.next_thing()
 
@@ -207,9 +205,7 @@ class Process(BaseProcess):
         state_machine: dc.StateMachine,
         process_tracker: dc.ProcessTracker,
     ) -> None:
-        super().__init__(
-            poll, logger, state_machine, config.name, config.pre, config.post
-        )
+        super().__init__(poll, logger, state_machine, config.name, config.pre, config.post)
         self.process_tracker = process_tracker
         self.config = config
 
@@ -244,9 +240,7 @@ class Process(BaseProcess):
         self.poll.register(self.out, dc.Poll.IN_FLAGS, self._handle_out)
         self.poll.register(self.err, dc.Poll.IN_FLAGS, self._handle_err)
 
-        self.process_tracker.report_pid_started(
-            self.proc.pid, " ".join(self.config.cmd)
-        )
+        self.process_tracker.report_pid_started(self.proc.pid, " ".join(self.config.cmd))
 
     def kill(self, sig: Optional[signal.Signals] = None) -> None:
         # kill via signal
@@ -273,9 +267,7 @@ class DockerProcess(BaseProcess):
         state_machine: dc.StateMachine,
         process_tracker: dc.ProcessTracker,
     ) -> None:
-        super().__init__(
-            poll, logger, state_machine, config.name, config.pre, config.post
-        )
+        super().__init__(poll, logger, state_machine, config.name, config.pre, config.post)
         self.process_tracker = process_tracker
         self.config = config
         self.container_id = ""
@@ -389,9 +381,7 @@ class DockerProcess(BaseProcess):
         ret = p.wait()
         if ret != 0:
             self.logger.log(
-                dc.asbytes(
-                    f"`docker wait` for {self.log_name()} failed with {ret} saying\n"
-                )
+                dc.asbytes(f"`docker wait` for {self.log_name()} failed with {ret} saying\n")
                 + dc.asbytes(err)
             )
             self.logger.log(
@@ -441,9 +431,7 @@ class DockerProcess(BaseProcess):
         assert self.proc
         ret = self.proc.wait()
         if ret != 0:
-            self.logger.log(
-                f"`docker container logs` for {self.log_name()} exited with {ret}\n"
-            )
+            self.logger.log(f"`docker container logs` for {self.log_name()} exited with {ret}\n")
             self.logger.log(
                 f" ----- `docker container logs` for {self.log_name()} exited with {ret} -----\n",
                 self.log_name(),
