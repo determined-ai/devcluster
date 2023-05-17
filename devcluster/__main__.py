@@ -158,6 +158,7 @@ def main() -> None:
             if not p.exists():
                 print(f"Path {path} does not exist", file=sys.stderr)
                 sys.exit(1)
+            print(f"expaned {path} to {p}")
         return p
 
 
