@@ -587,8 +587,6 @@ def deep_merge_configs(o1: typing.Any, o2: typing.Any) -> typing.Dict:
     def should_merge(d1: dict, d2: dict) -> bool:
         # is a stage
         if d1.keys() == d2.keys() and len(d1.keys()) == 1:
-            print(f"found stage {d1.keys()}")
-            print( d1, d2)
             return True
 
         # is a rp

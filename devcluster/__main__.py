@@ -15,6 +15,8 @@ import appdirs
 
 import devcluster as dc
 
+CONFIG_DIR = pathlib.Path(os.path.expanduser("~/.config/devcluster"))
+BASE_CONFIG_PATH = CONFIG_DIR / "_base.yaml"
 
 # prefer stdlib importlib.resources over pkg_resources, when available
 @typing.no_type_check
@@ -146,9 +148,22 @@ def main() -> None:
     if not ok:
         sys.exit(1)
 
+    def expand_path(path: str) -> pathlib.Path:
+        """
+        if the path doesn't exist try to match it with a known config name.
+        """
+        p = pathlib.Path(path)
+        if not p.exists():
+            p = CONFIG_DIR / (path + ".yaml")
+            if not p.exists():
+                print(f"Path {path} does not exist", file=sys.stderr)
+                sys.exit(1)
+        return p
+
+
     # Read config before the cwd.
     if args.config is not None:
-        config_path = args.config
+        config_path = expand_path(args.config)
     else:
         check_paths = []
         # Always support ~/.devcluster.yaml
@@ -185,23 +200,22 @@ def main() -> None:
             sys.exit(1)
         env["DOCKER_LOCALHOST"] = docker_localhost
 
-    def load_config_body(config_path: str) -> dict:
-        with open(config_path) as f:
+    def load_config_body(path: str) -> dict:
+        with open(path) as f:
             config_body = yaml.safe_load(f.read())
             if config_body is None:
-                print(f"config file '{config_path}' is an empty file!", file=sys.stderr)
+                print(f"config file '{path}' is an empty file!", file=sys.stderr)
                 sys.exit(1)
             if not isinstance(config_body, dict):
                 print(
-                    f"config file '{config_path}' does not represent a dict!",
+                    f"config file '{path}' does not represent a dict!",
                     file=sys.stderr,
                 )
                 sys.exit(1)
         return config_body
 
-    BASE_CONFIG_PATH = os.path.expanduser("~/.config/devcluster/base.yaml")
-    config_body = load_config_body(config_path)
-    base_config_body = load_config_body(BASE_CONFIG_PATH)
+    config_body = load_config_body(str(config_path))
+    base_config_body = load_config_body(str(BASE_CONFIG_PATH))
     config = dc.Config(dc.expand_env(config_body, env), dc.expand_env(base_config_body, env))
 
 
