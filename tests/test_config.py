@@ -18,7 +18,7 @@ def test_deep_merge_configs():
             ]
         },
     ]
-    merged = deep_merge_configs(configs[0], configs[1])
+    merged = dc.deep_merge_configs(configs)
     assert merged.get("stages")[0] == {"stage1": {"param1": 1, "param2": 3, "param3": 4}}
 
     # Test merge lists of dicts with the same pool_name
@@ -26,7 +26,7 @@ def test_deep_merge_configs():
         {"pools": [{"pool_name": "pool1", "param1": 1}, {"pool_name": "pool2", "param1": 1}]},
         {"pools": [{"pool_name": "pool1", "param2": 2}, {"pool_name": "pool2", "param2": 2}]}
     ]
-    merged = deep_merge_configs(configs[0], configs[1])
+    merged = dc.deep_merge_configs(configs)
     assert merged == {"pools": [
         {"pool_name": "pool1", "param1": 1, "param2": 2},
         {"pool_name": "pool2", "param1": 1, "param2": 2}
@@ -37,7 +37,7 @@ def test_deep_merge_configs():
         {"pools": [{"pool_name": "pool1", "param1": 1}, {"pool_name": "pool2", "param1": 1}]},
         {"pools": [{"pool_name": "pool3", "param1": 1}, {"pool_name": "pool4", "param1": 1}]}
     ]
-    merged = deep_merge_configs(configs[0], configs[1])
+    merged = dc.deep_merge_configs(configs)
     assert merged == {"pools": [
         {"pool_name": "pool1", "param1": 1},
         {"pool_name": "pool2", "param1": 1},

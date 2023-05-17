@@ -4,6 +4,7 @@ import yaml
 import os
 import string
 import typing
+import functools
 
 import devcluster as dc
 
@@ -554,7 +555,8 @@ class CommandConfig:
             check_list_of_strings(config, msg)
         return CommandConfig(config)
 
-def deep_merge(obj1, obj2, predicate):
+T = typing.TypeVar("T")
+def deep_merge(obj1: T, obj2: T, predicate) -> T:
     if isinstance(obj1, dict) and isinstance(obj2, dict):
         return deep_merge_dict(obj1, obj2, predicate)
     elif isinstance(obj1, list) and isinstance(obj2, list):
@@ -583,7 +585,7 @@ def deep_merge_list(list1, list2, predicate):
     return result
 
 
-def deep_merge_configs(o1: typing.Any, o2: typing.Any) -> typing.Dict:
+def deep_merge_configs(configs: typing.List[dict]) -> typing.Dict:
     def should_merge(d1: dict, d2: dict) -> bool:
         # is a stage
         if d1.keys() == d2.keys() and len(d1.keys()) == 1:
@@ -595,14 +597,13 @@ def deep_merge_configs(o1: typing.Any, o2: typing.Any) -> typing.Dict:
 
         return False
 
-    merged = deep_merge(o1, o2, should_merge)
-    return merged
+    return functools.reduce(lambda x, y: deep_merge(x, y, should_merge), configs)
 
 
 class Config:
     def __init__(self, config: typing.Any, base_config: typing.Optional[typing.Any] = None) -> None:
         if base_config:
-            config = deep_merge_configs(base_config, config)
+            config = deep_merge_configs([base_config, config])
         allowed = {"stages", "commands", "startup_input", "temp_dir", "cwd"}
         required = {"stages"}
         check_keys(allowed, required, config, type(self).__name__)
