@@ -2,6 +2,7 @@
 
 import argparse
 import contextlib
+import pathlib
 import fcntl
 import os
 import subprocess
@@ -184,18 +185,25 @@ def main() -> None:
             sys.exit(1)
         env["DOCKER_LOCALHOST"] = docker_localhost
 
-    with open(config_path) as f:
-        config_body = yaml.safe_load(f.read())
-        if config_body is None:
-            print(f"config file '{config_path}' is an empty file!", file=sys.stderr)
-            sys.exit(1)
-        if not isinstance(config_body, dict):
-            print(
-                f"config file '{config_path}' does not represent a dict!",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        config = dc.Config(dc.expand_env(config_body, env))
+    def load_config_body(config_path: str) -> dict:
+        with open(config_path) as f:
+            config_body = yaml.safe_load(f.read())
+            if config_body is None:
+                print(f"config file '{config_path}' is an empty file!", file=sys.stderr)
+                sys.exit(1)
+            if not isinstance(config_body, dict):
+                print(
+                    f"config file '{config_path}' does not represent a dict!",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        return config_body
+
+    BASE_CONFIG_PATH = os.path.expanduser("~/.config/devcluster/base.yaml")
+    config_body = load_config_body(config_path)
+    base_config_body = load_config_body(BASE_CONFIG_PATH)
+    config = dc.Config(dc.expand_env(config_body, env), dc.expand_env(base_config_body, env))
+
 
     # Process cwd.
     cwd_path = None
