@@ -2,7 +2,7 @@ import os
 import time
 import subprocess
 import sys
-import typing
+from typing import Any, Dict, List, Optional, Union
 
 import devcluster as dc
 
@@ -74,8 +74,8 @@ class Console:
         self,
         logger: dc.Logger,
         poll: dc.Poll,
-        stages: typing.List[str],
-        command_configs: typing.Dict[str, dc.CommandConfig],
+        stages: List[str],
+        command_configs: Dict[str, dc.CommandConfig],
         state_machine_handle: dc.StateMachineHandle,
     ):
         self.logger = logger
@@ -104,7 +104,7 @@ class Console:
         # Cycle through marker colors.
         self.marker_color = 0
 
-        self.last_bar_state = None  # type: typing.Any
+        self.last_bar_state = None  # type: Any
 
     def start(self) -> None:
         self.redraw()
@@ -152,9 +152,7 @@ class Console:
         )
 
         if self.scroll:
-            prebar_bytes += (
-                dc.fore_num(3) + b"(scrolling, 'x' to return to bottom)" + dc.res
-            )
+            prebar_bytes += dc.fore_num(3) + b"(scrolling, 'x' to return to bottom)" + dc.res
 
         self.print_bar(prebar_bytes)
 
@@ -167,9 +165,7 @@ class Console:
             os.write(sys.stdout.fileno(), b"\x1b[3r")
         self.redraw()
 
-    def set_stream(
-        self, stream: typing.Union[str, int], val: typing.Optional[int]
-    ) -> None:
+    def set_stream(self, stream: Union[str, int], val: Optional[int]) -> None:
         if isinstance(stream, int):
             stream = self.logger.index[stream]
 
@@ -325,9 +321,7 @@ class Console:
             self.act_marker()
         else:
             self.logger.log(
-                dc.fore_num(9)
-                + dc.asbytes(f'"{key}" is not a known shortcut\n')
-                + dc.res
+                dc.fore_num(9) + dc.asbytes(f'"{key}" is not a known shortcut\n') + dc.res
             )
 
     def handle_stdin(self, ev: int, _: int) -> None:

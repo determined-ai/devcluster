@@ -7,17 +7,17 @@ import signal
 import socket
 import sys
 import traceback
-import typing
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import devcluster as dc
 
-TCPAddr = typing.Tuple[str, int]
+TCPAddr = Tuple[str, int]
 UnixAddr = str
 
 
 def read_addr_spec(
     spec: str,
-) -> typing.Tuple[typing.Optional[TCPAddr], typing.Optional[UnixAddr]]:
+) -> Tuple[Optional[TCPAddr], Optional[UnixAddr]]:
     assert spec
     addr = None
     sock = None
@@ -79,8 +79,8 @@ class OneshotCB:
     Watch the state to print a message when the final state is up and to quit if anything fails.
     """
 
-    def __init__(self, quit_cb: typing.Callable[[], None]) -> None:
-        self.first_target = None  # type: typing.Optional[int]
+    def __init__(self, quit_cb: Callable[[], None]) -> None:
+        self.first_target = None  # type: Optional[int]
         self.up = False
         self.failing = False
         self.quit_cb = quit_cb
@@ -117,10 +117,10 @@ class OneshotCB:
 
 
 # Jmsg is a message from the json-based protocol between server and client.
-Jmsg = typing.Any
-JmsgCB = typing.Callable[[Jmsg], None]
+Jmsg = Any
+JmsgCB = Callable[[Jmsg], None]
 
-ConnectionCloseCB = typing.Callable[["Connection"], None]
+ConnectionCloseCB = Callable[["Connection"], None]
 
 
 class Connection:
@@ -175,17 +175,17 @@ class Server:
     def __init__(
         self,
         config: dc.Config,
-        listeners: typing.List[str],
+        listeners: List[str],
         quiet: bool = False,
         oneshot: bool = False,
-        initial_target_stage: typing.Optional[str] = None,
+        initial_target_stage: Optional[str] = None,
     ) -> None:
         self.config = config
         self.poll = dc.Poll()
 
         # map of fd's to socket objects
         self.listeners = {}
-        self.clients = set()  # type: typing.Set[Connection]
+        self.clients = set()  # type: Set[Connection]
 
         for spec in listeners:
             l = listener_from_spec(spec)
@@ -249,7 +249,7 @@ class Server:
             )
             self.state_machine.add_callback(self.console.status_cb)
 
-            def _sigwinch_handler(signum: typing.Any, frame: typing.Any) -> None:
+            def _sigwinch_handler(signum: Any, frame: Any) -> None:
                 """Enqueue a call to _sigwinch_callback() via poll()."""
                 os.write(self.state_machine.get_report_fd(), b"W")
 
@@ -276,7 +276,7 @@ class Server:
         self.command_config = config.commands
 
         # Write a traceback on SIGUSR1 (10)
-        def _traceback_signal(signum: typing.Any, frame: typing.Any) -> None:
+        def _traceback_signal(signum: Any, frame: Any) -> None:
             if self.console is None:
                 # print right to stdout
                 print("------")
@@ -289,7 +289,7 @@ class Server:
 
         signal.signal(signal.SIGUSR1, _traceback_signal)
 
-        def _quit_signal(signum: typing.Any, frame: typing.Any) -> None:
+        def _quit_signal(signum: Any, frame: Any) -> None:
             """Enqueue a call to _quit_in_loop() via poll()."""
             os.write(self.state_machine.get_report_fd(), b"Q")
 
@@ -324,9 +324,7 @@ class Server:
             # accept a connection
             l = self.listeners[fd]
             sock, _ = l.accept()
-            client = Connection(
-                self.poll, sock, self.jmsg_cb, self.client_conn_close_cb
-            )
+            client = Connection(self.poll, sock, self.jmsg_cb, self.client_conn_close_cb)
             self.clients.add(client)
             # start by sending some initial state
             init = {
@@ -380,7 +378,7 @@ class Server:
 
 def get_init_from_server(
     sock: socket.socket,
-) -> typing.Tuple[typing.Dict[str, typing.Any], bytes]:
+) -> Tuple[Dict[str, Any], bytes]:
     buf = b""
     while b"\n" not in buf:
         new_bytes = sock.recv(4096)
@@ -407,9 +405,7 @@ class ConsoleClient:
 
         self.poll = dc.Poll()
 
-        self.logger = dc.Logger(
-            init["stages"], None, init["logger_streams"], init["logger_index"]
-        )
+        self.logger = dc.Logger(init["stages"], None, init["logger_streams"], init["logger_index"])
         state_machine_handle = dc.StateMachineHandle(
             self.set_target_or_restart,
             self.run_command,
@@ -440,16 +436,16 @@ class ConsoleClient:
         dc.nonblock(self.pipe_wr)
         self.poll.register(self.pipe_rd, dc.Poll.IN_FLAGS, self.handle_pipe)
 
-        def _sigwinch_handler(signum: typing.Any, frame: typing.Any) -> None:
+        def _sigwinch_handler(signum: Any, frame: Any) -> None:
             """Enqueue a call to _sigwinch_callback() via self.poll()."""
             os.write(self.pipe_wr, b"W")
 
         signal.signal(signal.SIGWINCH, _sigwinch_handler)
 
-        self.tracebacks = []  # type: typing.List[typing.List[str]]
+        self.tracebacks = []  # type: List[List[str]]
 
         # Write a traceback to console output on SIGUSR1 (10)
-        def _traceback_signal(signum: typing.Any, frame: typing.Any) -> None:
+        def _traceback_signal(signum: Any, frame: Any) -> None:
             self.tracebacks.append(traceback.format_stack(frame))
             os.write(self.pipe_wr, b"T")
 
@@ -479,7 +475,7 @@ class ConsoleClient:
                     # SIGUSR1, or "print me a stack trace"
                     for t in self.tracebacks:
                         self.logger.log("\n".join(t))
-                    self.tracbacks = []  # type: typing.List[typing.List[str]]
+                    self.tracbacks = []  # type: List[List[str]]
                 else:
                     raise ValueError(f"invalid value in Client.handle_pipe(): {c}")
         elif ev & dc.Poll.ERR_FLAGS:

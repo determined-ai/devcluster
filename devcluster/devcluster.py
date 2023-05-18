@@ -11,7 +11,7 @@ import sys
 import tempfile
 import threading
 import time
-import typing
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Set, Union
 
 import yaml
 
@@ -33,8 +33,8 @@ class StageError(Exception):
     pass
 
 
-Event = typing.Union[dc.Log, dc.Status]
-EventCB = typing.Callable[[Event], None]
+Event = Union[dc.Log, dc.Status]
+EventCB = Callable[[Event], None]
 
 
 class Devcluster:
@@ -47,10 +47,10 @@ class Devcluster:
 
     def __init__(
         self,
-        config: typing.Union[str, typing.Dict[str, typing.Any]],
-        initial_target_stage: typing.Union[int, str] = 0,
-        env: typing.Optional[typing.Dict[str, str]] = None,
-        event_cbs: typing.Sequence[EventCB] = (),
+        config: Union[str, Dict[str, Any]],
+        initial_target_stage: Union[int, str] = 0,
+        env: Optional[Dict[str, str]] = None,
+        event_cbs: Sequence[EventCB] = (),
     ) -> None:
         self._env = env
         self._initial_target_stage = initial_target_stage
@@ -67,28 +67,24 @@ class Devcluster:
         self._stage_names = ["dead"] + [stage.name.lower() for stage in cfg.stages]
         self._stage_map = {
             name: i for i, name in enumerate(self._stage_names)
-        }  # type: typing.Dict[typing.Union[str, int], int]
+        }  # type: Dict[Union[str, int], int]
         self._stage_map.update({i: i for i in range(len(self._stage_names))})
-        self._target_map = {
-            i: name for i, name in enumerate(self._stage_names)
-        }  # type: typing.Dict[typing.Union[str, int], str]
-        self._target_map.update(
-            {name: name for i, name in enumerate(self._stage_names)}
-        )
+        self._target_map = dict(enumerate(self._stage_names))  # type: Dict[Union[str, int], str]
+        self._target_map.update({name: name for i, name in enumerate(self._stage_names)})
 
-        self._tmp = None  # type: typing.Optional[str]
-        self._proc = None  # type: typing.Optional[subprocess.Popen]
-        self._sock = None  # type: typing.Optional[socket.socket]
+        self._tmp = None  # type: Optional[str]
+        self._proc = None  # type: Optional[subprocess.Popen]
+        self._sock = None  # type: Optional[socket.socket]
         self._sock_failed = False
-        self._conn_thread = None  # type: typing.Optional[threading.Thread]
+        self._conn_thread = None  # type: Optional[threading.Thread]
 
         self._lock = threading.Lock()
-        self._status = None  # type: typing.Optional[dc.Status]
-        self._queues = set()  # type: typing.Set[queue.Queue]
+        self._status = None  # type: Optional[dc.Status]
+        self._queues = set()  # type: Set[queue.Queue]
         self._event_cbs = event_cbs
 
     @property
-    def stages(self) -> typing.List[str]:
+    def stages(self) -> List[str]:
         """Return the list of stage names configured for this cluster."""
         return self._stage_names
 
@@ -102,9 +98,7 @@ class Devcluster:
         Raise a DevclusterError if the devcluster process has died.
         """
         if self._proc is None:
-            raise ValueError(
-                "health_check() is not meaningful before .start() or after .close()"
-            )
+            raise ValueError("health_check() is not meaningful before .start() or after .close()")
         if self._proc.poll() is not None:
             raise DevclusterError("process has died")
         if self._sock_failed:
@@ -188,9 +182,7 @@ class Devcluster:
             stderr += line
         else:
             self.close()
-            raise RuntimeError(
-                "devcluster failed on startup:\n" + stderr.decode("utf8")
-            )
+            raise RuntimeError("devcluster failed on startup:\n" + stderr.decode("utf8"))
 
         # Connect to the devcluster subprocess and start processing events.
         self._sock = dc.connection_from_spec(sock_path)
@@ -248,16 +240,16 @@ class Devcluster:
         self.start()
         return self
 
-    def __exit__(self, *_: typing.Any) -> None:
+    def __exit__(self, *_: Any) -> None:
         self.close()
 
-    def _event_cb(self, event: typing.Optional[Event]) -> None:
+    def _event_cb(self, event: Optional[Event]) -> None:
         with self._lock:
             queues = list(self._queues)
         for q in queues:
             q.put(event)
 
-    def _send_jmsg(self, jsmg: typing.Any) -> None:
+    def _send_jmsg(self, jsmg: Any) -> None:
         """
         Send a command jmsg over the socket.
 
@@ -273,9 +265,9 @@ class Devcluster:
     @contextlib.contextmanager
     def wait_for_event(
         self,
-        condition: typing.Callable[[typing.Union[dc.Log, dc.Status]], bool],
-        timeout: typing.Optional[float],
-    ) -> typing.Iterator[None]:
+        condition: Callable[[Union[dc.Log, dc.Status]], bool],
+        timeout: Optional[float],
+    ) -> Iterator[None]:
         """
         Wait for the provided condition function to return True, checking against
         every Status and Log update from the devcluster subprocess.
@@ -332,9 +324,9 @@ class Devcluster:
 
     def set_target(
         self,
-        target: typing.Union[int, str],
+        target: Union[int, str],
         wait: bool = True,
-        timeout: typing.Optional[float] = None,
+        timeout: Optional[float] = None,
     ) -> None:
         """
         Set a target state for the cluster.
@@ -367,9 +359,9 @@ class Devcluster:
 
     def restart_stage(
         self,
-        target: typing.Union[int, str],
+        target: Union[int, str],
         wait: bool = True,
-        timeout: typing.Optional[float] = None,
+        timeout: Optional[float] = None,
     ) -> None:
         """
         Start/Restart a stage of the cluster.
@@ -409,10 +401,10 @@ class Devcluster:
 
     def kill_stage(
         self,
-        target: typing.Union[int, str],
-        signal: typing.Optional[_signal.Signals] = None,
+        target: Union[int, str],
+        signal: Optional[_signal.Signals] = None,
         wait: bool = True,
-        timeout: typing.Optional[float] = None,
+        timeout: Optional[float] = None,
     ) -> None:
         """
         Kill a stage of the cluster.
@@ -443,12 +435,12 @@ class Devcluster:
     @contextlib.contextmanager
     def wait_for_stage_log(
         self,
-        stage: typing.Union[int, str],
+        stage: Union[int, str],
         regex: bytes,
         ignore_crashes: bool = False,
-        timeout: typing.Optional[float] = None,
+        timeout: Optional[float] = None,
         verbose: bool = False,
-    ) -> typing.Iterator[None]:
+    ) -> Iterator[None]:
         """
         Wait for a regex to appear on a stage log line.  The action which you expect to trigger the
         log line should occur inside of the context manager, and the waiting will happen when
@@ -487,9 +479,9 @@ class Devcluster:
     def wait_for_console_log(
         self,
         regex: bytes,
-        timeout: typing.Optional[float] = None,
+        timeout: Optional[float] = None,
         verbose: bool = False,
-    ) -> typing.Iterator[None]:
+    ) -> Iterator[None]:
         """
         Wait for a regex to appear in the console logs.  The action which you expect to trigger the
         log line should occur inside of the context manager, and the waiting will happen when

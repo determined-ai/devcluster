@@ -1,7 +1,7 @@
 import base64
 import os
 import time
-import typing
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import devcluster as dc
 
@@ -13,28 +13,28 @@ class Log:
         self.msg = msg
         self.stream = stream
 
-    def to_dict(self) -> typing.Any:
+    def to_dict(self) -> Any:
         return {"msg": base64.b64encode(self.msg).decode("utf8"), "stream": self.stream}
 
     @classmethod
-    def from_dict(self, j: typing.Any) -> "Log":
+    def from_dict(self, j: Any) -> "Log":
         msg = base64.b64decode(j["msg"])
         stream = j["stream"]
         return Log(msg=msg, stream=stream)
 
 
-LogCB = typing.Callable[[Log], None]
-StreamItem = typing.Tuple[float, bytes]
-Streams = typing.Dict[str, typing.List[StreamItem]]
+LogCB = Callable[[Log], None]
+StreamItem = Tuple[float, bytes]
+Streams = Dict[str, List[StreamItem]]
 
 
 class Logger:
     def __init__(
         self,
-        streams: typing.List[str],
-        log_dir: typing.Optional[str],
-        init_streams: typing.Optional[Streams] = None,
-        init_index: typing.Optional[typing.Dict[int, str]] = None,
+        streams: List[str],
+        log_dir: Optional[str],
+        init_streams: Optional[Streams] = None,
+        init_index: Optional[Dict[int, str]] = None,
     ):
         all_streams = ["console"] + streams
 
@@ -44,11 +44,11 @@ class Logger:
             self.streams = init_streams
 
         if init_index is None:
-            self.index = {i: stream for i, stream in enumerate(all_streams)}
+            self.index = dict(enumerate(all_streams))
         else:
             self.index = init_index
 
-        self.callbacks = []  # type: typing.List[LogCB]
+        self.callbacks = []  # type: List[LogCB]
 
         self.log_dir = log_dir
         if log_dir is not None:

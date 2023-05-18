@@ -1,52 +1,50 @@
 import abc
 import re
-import yaml
 import os
 import string
 import typing
 import functools
+from typing import Any, Dict, List, Optional, Set
+
+import yaml
 
 import devcluster as dc
 
 
-def check_string(s: typing.Any, msg: str) -> str:
+def check_string(s: Any, msg: str) -> str:
     assert isinstance(s, str), msg
     return s
 
 
-def check_keys(
-    allowed: typing.Set[str], required: typing.Set[str], config: typing.Dict, name: str
-) -> None:
+def check_keys(allowed: Set[str], required: Set[str], config: Dict, name: str) -> None:
     extra = set(config.keys()).difference(allowed)
     assert len(extra) == 0, f"invalid keys for {name}: {extra}"
     missing = required.difference(set(config.keys()))
     assert len(missing) == 0, f"missing required keys for {name}: {missing}"
 
 
-def check_list_of_strings(l: typing.Any, msg: str) -> typing.List[str]:
+def check_list_of_strings(l: Any, msg: str) -> List[str]:
     assert isinstance(l, list), msg
     for s in l:
         assert isinstance(s, str), msg
     return l
 
 
-def check_list_of_dicts(l: typing.Any, msg: str) -> typing.List[typing.Dict]:
+def check_list_of_dicts(l: Any, msg: str) -> List[Dict]:
     assert isinstance(l, list), msg
     for s in l:
         assert isinstance(s, dict), msg
     return l
 
 
-def check_dict_with_string_keys(
-    d: typing.Any, msg: str
-) -> typing.Dict[str, typing.Any]:
+def check_dict_with_string_keys(d: Any, msg: str) -> Dict[str, Any]:
     assert isinstance(d, dict), msg
     for k in d:
         assert isinstance(k, str), msg
     return d
 
 
-def check_dict_of_strings(d: typing.Any, msg: str) -> typing.Dict[str, str]:
+def check_dict_of_strings(d: Any, msg: str) -> Dict[str, str]:
     assert isinstance(d, dict), msg
     for k, v in d.items():
         assert isinstance(k, str), msg
@@ -54,14 +52,14 @@ def check_dict_of_strings(d: typing.Any, msg: str) -> typing.Dict[str, str]:
     return d
 
 
-def read_path(path: typing.Optional[str]) -> typing.Optional[str]:
+def read_path(path: Optional[str]) -> Optional[str]:
     """Expand ~'s in a non-None path."""
     if path is None:
         return None
     return os.path.expanduser(path)
 
 
-def expand_env(value: typing.Any, env: typing.Dict[str, str]) -> typing.Any:
+def expand_env(value: Any, env: Dict[str, str]) -> Any:
     """Expand string variables in the config file"""
     if isinstance(value, str):
         return string.Template(value).safe_substitute(env)
@@ -77,13 +75,11 @@ class StageConfig(metaclass=abc.ABCMeta):
     name: str
 
     @staticmethod
-    def read(config: typing.Any, temp_dir: str) -> "StageConfig":
+    def read(config: Any, temp_dir: str) -> "StageConfig":
         allowed = {"elastic", "db", "master", "agent", "custom", "custom_docker"}
         # required = set()
 
-        assert isinstance(
-            config, dict
-        ), "StageConfig must be a dictionary with a single key"
+        assert isinstance(config, dict), "StageConfig must be a dictionary with a single key"
         assert len(config), "StageConfig must be a dictionary with a single key"
         typ, val = next(iter(config.items()))
         assert typ in allowed, f"{typ} is not one of {allowed}"
@@ -115,13 +111,11 @@ class StageConfig(metaclass=abc.ABCMeta):
 
 class AtomicConfig(metaclass=abc.ABCMeta):
     @staticmethod
-    def read(config: typing.Any) -> "AtomicConfig":
+    def read(config: Any) -> "AtomicConfig":
         allowed = {"custom", "sh", "conncheck", "logcheck"}
         # required = set()
 
-        assert isinstance(
-            config, dict
-        ), "AtomicConfig must be a dictionary with a single key"
+        assert isinstance(config, dict), "AtomicConfig must be a dictionary with a single key"
         assert len(config), "AtomicConfig must be a dictionary with a single key"
         typ, val = next(iter(config.items()))
         assert typ in allowed, f"{typ} is not one of {allowed}"
@@ -146,7 +140,7 @@ class AtomicConfig(metaclass=abc.ABCMeta):
 class ElasticConfig(StageConfig):
     """ElasticConfig is a canned stage that runs Elastic in docker"""
 
-    def __init__(self, config: typing.Any) -> None:
+    def __init__(self, config: Any) -> None:
         allowed = {
             "name",
             "api_port",
@@ -158,7 +152,7 @@ class ElasticConfig(StageConfig):
             "cmdline",
             "post",
         }
-        required = set()  # type: typing.Set[str]
+        required = set()  # type: Set[str]
         check_keys(allowed, required, config, type(self).__name__)
 
         self.api_port = int(config.get("api_port", 9200))
@@ -226,15 +220,13 @@ class ElasticConfig(StageConfig):
             }
         )
 
-        return dc.DockerProcess(
-            custom_config, poll, logger, state_machine, process_tracker
-        )
+        return dc.DockerProcess(custom_config, poll, logger, state_machine, process_tracker)
 
 
 class DBConfig(StageConfig):
     """DBConfig is a canned stage that runs the database in docker"""
 
-    def __init__(self, config: typing.Any) -> None:
+    def __init__(self, config: Any) -> None:
         allowed = {
             "name",
             "port",
@@ -246,7 +238,7 @@ class DBConfig(StageConfig):
             "cmdline",
             "post",
         }
-        required = set()  # type: typing.Set[str]
+        required = set()  # type: Set[str]
         check_keys(allowed, required, config, type(self).__name__)
 
         self.port = int(config.get("port", 5432))
@@ -297,22 +289,18 @@ class DBConfig(StageConfig):
             }
         )
 
-        return dc.DockerProcess(
-            custom_config, poll, logger, state_machine, process_tracker
-        )
+        return dc.DockerProcess(custom_config, poll, logger, state_machine, process_tracker)
 
 
 class MasterConfig(StageConfig):
-    def __init__(self, config: typing.Any, temp_dir: str) -> None:
-        allowed = {"pre", "post", "cmdline", "config_file", "name"}
-        required = set()  # type: typing.Set[str]
+    def __init__(self, config: Any, temp_dir: str) -> None:
+        allowed = {"pre", "post", "cmdline", "config_file", "name", "kill_signal"}
+        required = set()  # type: Set[str]
         check_keys(allowed, required, config, type(self).__name__)
 
         self.config_file = config.get("config_file", {})
 
-        check_list_of_dicts(
-            config.get("pre", []), "MasterConfig.pre must be a list of dicts"
-        )
+        check_list_of_dicts(config.get("pre", []), "MasterConfig.pre must be a list of dicts")
         self.pre = config.get("pre", [])
         self.post = config.get(
             "post",
@@ -329,6 +317,8 @@ class MasterConfig(StageConfig):
 
         self.name = config.get("name", "master")
         self.temp_dir = temp_dir
+
+        self.kill_signal = config.get("kill_signal", None)
 
     def build_stage(
         self,
@@ -349,6 +339,7 @@ class MasterConfig(StageConfig):
                 "name": self.name,
                 "pre": self.pre,
                 "post": self.post,
+                "kill_signal": self.kill_signal,
             }
         )
 
@@ -356,16 +347,14 @@ class MasterConfig(StageConfig):
 
 
 class AgentConfig(StageConfig):
-    def __init__(self, config: typing.Any, temp_dir: str) -> None:
-        allowed = {"pre", "cmdline", "config_file", "name"}
-        required = set()  # type: typing.Set[str]
+    def __init__(self, config: Any, temp_dir: str) -> None:
+        allowed = {"pre", "cmdline", "config_file", "name", "kill_signal"}
+        required = set()  # type: Set[str]
         check_keys(allowed, required, config, type(self).__name__)
 
         self.config_file = config.get("config_file", {})
 
-        check_list_of_dicts(
-            config.get("pre", []), "AgentConfig.pre must be a list of dicts"
-        )
+        check_list_of_dicts(config.get("pre", []), "AgentConfig.pre must be a list of dicts")
         self.pre = config.get("pre", [])
 
         check_list_of_strings(
@@ -380,6 +369,8 @@ class AgentConfig(StageConfig):
         self.name = config.get("name", "agent")
         self.temp_dir = temp_dir
 
+        self.kill_signal = config.get("kill_signal", None)
+
     def build_stage(
         self,
         poll: "dc.Poll",
@@ -393,13 +384,20 @@ class AgentConfig(StageConfig):
 
         cmd = [config_path if arg == ":config" else arg for arg in self.cmdline]
 
-        custom_config = CustomConfig({"cmd": cmd, "name": self.name, "pre": self.pre})
+        custom_config = CustomConfig(
+            {
+                "cmd": cmd,
+                "name": self.name,
+                "pre": self.pre,
+                "kill_signal": self.kill_signal,
+            }
+        )
 
         return dc.Process(custom_config, poll, logger, state_machine, process_tracker)
 
 
 class ConnCheckConfig(AtomicConfig):
-    def __init__(self, config: typing.Any) -> None:
+    def __init__(self, config: Any) -> None:
         allowed = {"host", "port"}
         required = {"port"}
         check_keys(allowed, required, config, type(self).__name__)
@@ -414,7 +412,7 @@ class ConnCheckConfig(AtomicConfig):
 
 
 class LogCheckConfig(AtomicConfig):
-    def __init__(self, config: typing.Any) -> None:
+    def __init__(self, config: Any) -> None:
         allowed = {"regex", "stream"}
         required = {"regex"}
         check_keys(allowed, required, config, type(self).__name__)
@@ -434,7 +432,7 @@ class LogCheckConfig(AtomicConfig):
 
 
 class CustomAtomicConfig(AtomicConfig):
-    def __init__(self, config: typing.Any) -> None:
+    def __init__(self, config: Any) -> None:
         check_list_of_strings(config, "AtomicConfig.custom must be a list of strings")
         self.cmd = config
 
@@ -445,7 +443,7 @@ class CustomAtomicConfig(AtomicConfig):
 
 
 class ShellAtomicConfig(AtomicConfig):
-    def __init__(self, config: typing.Any) -> None:
+    def __init__(self, config: Any) -> None:
         assert isinstance(config, str), "AtomicConfig.sh must be a single string"
         self.cmd = ["sh", "-c", config]
 
@@ -456,8 +454,8 @@ class ShellAtomicConfig(AtomicConfig):
 
 
 class CustomConfig(StageConfig):
-    def __init__(self, config: typing.Any) -> None:
-        allowed = {"cmd", "name", "env", "cwd", "pre", "post"}
+    def __init__(self, config: Any) -> None:
+        allowed = {"cmd", "name", "env", "cwd", "pre", "post", "kill_signal"}
         required = {"cmd", "name"}
 
         check_keys(allowed, required, config, type(self).__name__)
@@ -467,23 +465,19 @@ class CustomConfig(StageConfig):
 
         self.name = check_string(config["name"], "CustomConfig.name must be a string")
 
+        self.kill_signal = config.get("kill_signal", None)
+
         self.env = config.get("env", {})
-        check_dict_with_string_keys(
-            self.env, "CustomConfig.pre must be a list of dicts"
-        )
+        check_dict_with_string_keys(self.env, "CustomConfig.pre must be a list of dicts")
 
         self.cwd = read_path(config.get("cwd"))
         if self.cwd is not None:
             assert isinstance(self.cwd, str), "CustomConfig.name must be a string"
 
-        check_list_of_dicts(
-            config.get("pre", []), "CustomConfig.pre must be a list of dicts"
-        )
+        check_list_of_dicts(config.get("pre", []), "CustomConfig.pre must be a list of dicts")
         self.pre = [AtomicConfig.read(pre) for pre in config.get("pre", [])]
 
-        check_list_of_dicts(
-            config.get("post", []), "CustomConfig.post must be a list of dicts"
-        )
+        check_list_of_dicts(config.get("post", []), "CustomConfig.post must be a list of dicts")
         self.post = [AtomicConfig.read(post) for post in config.get("post", [])]
 
     def build_stage(
@@ -497,7 +491,7 @@ class CustomConfig(StageConfig):
 
 
 class CustomDockerConfig(StageConfig):
-    def __init__(self, config: typing.Any) -> None:
+    def __init__(self, config: Any) -> None:
         allowed = {"name", "container_name", "run_args", "kill_signal", "pre", "post"}
         required = {"name", "container_name", "run_args"}
 
@@ -511,16 +505,12 @@ class CustomDockerConfig(StageConfig):
         )
 
         self.kill_signal = config.get("kill_signal", "KILL")
-        assert isinstance(
-            self.kill_signal, str
-        ), "CustomDockerConfig.kill_signal must be a string"
+        assert isinstance(self.kill_signal, str), "CustomDockerConfig.kill_signal must be a string"
 
         self.name = config["name"]
         assert isinstance(self.name, str), "CustomDockerConfig.name must be a string"
 
-        check_list_of_dicts(
-            config.get("pre", []), "CustomDockerConfig.pre must be a list of dicts"
-        )
+        check_list_of_dicts(config.get("pre", []), "CustomDockerConfig.pre must be a list of dicts")
         self.pre = [AtomicConfig.read(pre) for pre in config.get("pre", [])]
 
         check_list_of_dicts(
@@ -543,7 +533,7 @@ class CommandConfig:
         self.command = command
 
     @staticmethod
-    def read(config: typing.Any) -> "CommandConfig":
+    def read(config: Any) -> "CommandConfig":
         # allowable command configs:
         # commands:
         #   a: echo hello world
@@ -611,9 +601,7 @@ class Config:
         self.temp_dir = config.get("temp_dir", "/tmp/devcluster")
 
         check_list_of_dicts(config["stages"], "stages must be a list of dicts")
-        self.stages = [
-            StageConfig.read(stage, self.temp_dir) for stage in config["stages"]
-        ]
+        self.stages = [StageConfig.read(stage, self.temp_dir) for stage in config["stages"]]
         self.startup_input = config.get("startup_input", "")
 
         commands = config.get("commands", {})
