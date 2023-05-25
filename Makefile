@@ -9,7 +9,6 @@ check:
 .PHONY: test
 test:
 	python tests/test_e2e.py
-	python tests/test_config.py
 
 .PHONY: fmt
 fmt:

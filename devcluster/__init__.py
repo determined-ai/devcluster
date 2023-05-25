@@ -18,8 +18,6 @@ from devcluster.config import (
     CustomConfig,
     CustomDockerConfig,
     AtomicConfig,
-    read_path,
-    deep_merge_configs,
 )
 from devcluster.recovery import ProcessTracker
 from devcluster.logger import Logger, Log, LogCB

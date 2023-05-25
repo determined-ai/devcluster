@@ -2,8 +2,6 @@ import abc
 import re
 import os
 import string
-import typing
-import functools
 from typing import Any, Dict, List, Optional, Set
 
 import yaml
@@ -545,55 +543,9 @@ class CommandConfig:
             check_list_of_strings(config, msg)
         return CommandConfig(config)
 
-T = typing.TypeVar("T")
-def deep_merge(obj1: T, obj2: T, predicate) -> T:
-    if isinstance(obj1, dict) and isinstance(obj2, dict):
-        return deep_merge_dict(obj1, obj2, predicate)
-    elif isinstance(obj1, list) and isinstance(obj2, list):
-        return deep_merge_list(obj1, obj2, predicate)
-    else:
-        return obj2
-
-def deep_merge_dict(dict1, dict2, predicate):
-    result = dict1.copy()
-    for key, value in dict2.items():
-        if key in dict1:
-            result[key] = deep_merge(dict1[key], value, predicate)
-        else:
-            result[key] = value
-    return result
-
-def deep_merge_list(list1, list2, predicate):
-    result = list1.copy()
-    for item2 in list2:
-        if not any(predicate(item1, item2) for item1 in list1):
-            result.append(item2)
-        else:
-            for index, item1 in enumerate(list1):
-                if predicate(item1, item2):
-                    result[index] = deep_merge(item1, item2, predicate)
-    return result
-
-
-def deep_merge_configs(configs: typing.List[dict]) -> typing.Dict:
-    def should_merge(d1: dict, d2: dict) -> bool:
-        # is a stage
-        if d1.keys() == d2.keys() and len(d1.keys()) == 1:
-            return True
-
-        # is a rp
-        if d1.get("pool_name") is not None and d1.get("pool_name") == d2.get("pool_name"):
-            return True
-
-        return False
-
-    return functools.reduce(lambda x, y: deep_merge(x, y, should_merge), configs)
-
 
 class Config:
-    def __init__(self, config: typing.Any, base_config: typing.Optional[typing.Any] = None) -> None:
-        if base_config:
-            config = deep_merge_configs([base_config, config])
+    def __init__(self, config: Any) -> None:
         allowed = {"stages", "commands", "startup_input", "temp_dir", "cwd"}
         required = {"stages"}
         check_keys(allowed, required, config, type(self).__name__)
@@ -611,4 +563,3 @@ class Config:
         self.cwd = read_path(config.get("cwd"))
         if self.cwd is not None:
             assert isinstance(self.cwd, str), "cwd must be a string"
-
