@@ -591,9 +591,13 @@ def deep_merge_configs(configs: typing.List[dict]) -> typing.Dict:
 
 
 class Config:
-    def __init__(self, config: typing.Any, base_config: typing.Optional[typing.Any] = None) -> None:
-        if base_config:
-            config = deep_merge_configs([base_config, config])
+    def __init__(self, *configs: typing.Any) -> None:
+        assert len(configs) > 0, "must provide at least one config"
+        if len(configs) > 1:
+            config = deep_merge_configs(list(configs))
+        else:
+            config = configs[0]
+        assert isinstance(config, dict), "config must be a dict"
         allowed = {"stages", "commands", "startup_input", "temp_dir", "cwd"}
         required = {"stages"}
         check_keys(allowed, required, config, type(self).__name__)

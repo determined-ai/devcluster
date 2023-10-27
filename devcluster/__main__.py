@@ -8,7 +8,7 @@ import os
 import subprocess
 import re
 import sys
-from typing import Iterator, no_type_check, Optional, Sequence
+from typing import Iterator, List, no_type_check, Optional, Sequence
 
 import appdirs
 import yaml
@@ -101,7 +101,7 @@ def maybe_install_default_config() -> Optional[str]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("-c", "--config", dest="config", action="store")
+    parser.add_argument("-c", "--config", dest="config", action="store", nargs='+', help="Provide one or more config files")
     parser.add_argument("-1", "--oneshot", dest="oneshot", action="store_true")
     parser.add_argument("-q", "--quiet", dest="quiet", action="store_true")
     parser.add_argument("-C", "--cwd", dest="cwd", action="store")
@@ -163,8 +163,10 @@ def main() -> None:
 
 
     # Read config before the cwd.
+    config_paths: List[pathlib.Path] = []
     if args.config is not None:
-        config_path = expand_path(args.config)
+        for path in args.config:
+            config_paths.append(expand_path(path))
     else:
         check_paths = []
         # Always support ~/.devcluster.yaml
@@ -215,9 +217,13 @@ def main() -> None:
                 sys.exit(1)
         return config_body
 
-    config_body = load_config_body(str(config_path))
+    config_bodies = [load_config_body(str(path)) for path in config_paths]
     base_config_body = load_config_body(str(BASE_CONFIG_PATH))
-    config = dc.Config(dc.expand_env(config_body, env), dc.expand_env(base_config_body, env))
+    config = dc.Config(
+        *[
+            dc.expand_env(conf_body, env) for conf_body in  [base_config_body] + config_bodies
+        ]
+    )
 
 
     # Process cwd.
