@@ -307,26 +307,38 @@ class Console:
             self.state_machine_handle.dump_state()
         elif key == "q":
             self.state_machine_handle.quit()
-        elif key == "k":
+        # include up arrow and scroll up
+        elif key == "k" or key == "\033[A" or key == "\033OA":
             self.act_scroll(1)
-        elif key == "u":
+        # include page up
+        elif key == "u" or key == "\033[5":
             self.act_scroll(10)
-        elif key == "j":
+        # include down arrow and scroll down
+        elif key == "j" or key == "\033[B" or key == "\033OB":
             self.act_scroll(-1)
-        elif key == "d":
+        # include page down
+        elif key == "d" or key == "\033[6":
             self.act_scroll(-10)
-        elif key == "x":
+        # include end key and enter
+        elif key == "x" or key == "\033[F" or key == "\x0d":
             self.act_scroll_reset()
         elif key == " ":
             self.act_marker()
         else:
+            hex = key.encode("utf-8").hex()
+            if key[0] == "\033":
+                # escape sequence
+                key = "\\033" + key[1:]
             self.logger.log(
-                dc.fore_num(9) + dc.asbytes(f'"{key}" is not a known shortcut\n') + dc.res
+                dc.fore_num(9) + dc.asbytes(f'"{key}" is not a known shortcut ({hex})\n') + dc.res
             )
 
     def handle_stdin(self, ev: int, _: int) -> None:
         if ev & dc.Poll.IN_FLAGS:
             key = sys.stdin.read(1)
+            # escape sequence
+            if key == "\033":
+                key += sys.stdin.read(2)
             self.handle_key(key)
         elif ev & dc.Poll.ERR_FLAGS:
             raise ValueError("stdin closed!")
