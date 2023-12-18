@@ -1,4 +1,5 @@
 import os
+import fcntl
 import time
 import subprocess
 import sys
@@ -305,7 +306,8 @@ class Console:
             self.state_machine_handle.quit()
         elif key == "\x04":  # ctrl-d
             self.state_machine_handle.dump_state()
-        elif key == "q":
+        # include escape key
+        elif key == "q" or key == "\033":
             self.state_machine_handle.quit()
         # include up arrow and scroll up
         elif key == "k" or key == "\033[A" or key == "\033OA":
@@ -325,20 +327,25 @@ class Console:
         elif key == " ":
             self.act_marker()
         else:
-            hex = key.encode("utf-8").hex()
+            hexKey = key.encode("utf-8").hex()
             if key[0] == "\033":
                 # escape sequence
                 key = "\\033" + key[1:]
             self.logger.log(
-                dc.fore_num(9) + dc.asbytes(f'"{key}" is not a known shortcut ({hex})\n') + dc.res
+                dc.fore_num(9)
+                + dc.asbytes(f'"{key}" is not a known shortcut (0x{hexKey})\n')
+                + dc.res
             )
 
     def handle_stdin(self, ev: int, _: int) -> None:
         if ev & dc.Poll.IN_FLAGS:
             key = sys.stdin.read(1)
-            # escape sequence
             if key == "\033":
+                # escape sequence, read next 2 characters non-blocking
+                orig_fl = fcntl.fcntl(sys.stdin, fcntl.F_GETFL)
+                fcntl.fcntl(sys.stdin, fcntl.F_SETFL, orig_fl | os.O_NONBLOCK)
                 key += sys.stdin.read(2)
+                fcntl.fcntl(sys.stdin, fcntl.F_SETFL, orig_fl)
             self.handle_key(key)
         elif ev & dc.Poll.ERR_FLAGS:
             raise ValueError("stdin closed!")
