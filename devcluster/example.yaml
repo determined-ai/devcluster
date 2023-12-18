@@ -56,6 +56,7 @@ stages:
   #     #   discovery.type: "single-node"
   #     #   cluster.routing.allocation.disk.threshold_enabled: "false"
   #     #   logger.level: "WARN"
+  #     #   ingest.geoip.downloader.enabled: "false"
 
   #     # data_dir is where the persistent files will be saved to.  If this key
   #     # is not present, the elastic logs will not persist at all.

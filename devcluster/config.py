@@ -157,16 +157,19 @@ class ElasticConfig(StageConfig):
         self.elastic_port = int(config.get("elastic_port", 9300))
 
         self.environment = check_dict_of_strings(
-            config.get(
+            {
+                "discovery.type": "single-node",
+                "cluster.routing.allocation.disk.threshold_enabled": "false",
+                "logger.level": "WARN",
+                "ingest.geoip.downloader.enabled": "false",
+            }
+            | config.get(
                 "environment",
-                {
-                    "discovery.type": "single-node",
-                    "cluster.routing.allocation.disk.threshold_enabled": "false",
-                    "logger.level": "WARN",
-                },
+                {},
             ),
             "ElasticConfig.environment must be a dict of strings to strings",
         )
+
         self.data_dir = read_path(config.get("data_dir"))
         self.container_name = str(config.get("container_name", "determined_elastic"))
         self.name = str(config.get("name", "elastic"))
@@ -185,7 +188,6 @@ class ElasticConfig(StageConfig):
         state_machine: "dc.StateMachine",
         process_tracker: "dc.ProcessTracker",
     ) -> "dc.Stage":
-
         if self.data_dir:
             # elastic is gonna have a bad day if this directory doesn't exist yet.
             try:
@@ -260,7 +262,6 @@ class DBConfig(StageConfig):
         state_machine: "dc.StateMachine",
         process_tracker: "dc.ProcessTracker",
     ) -> "dc.Stage":
-
         if self.data_dir:
             run_args = ["-v", f"{self.data_dir}:/var/lib/postgresql/data"]
         else:
