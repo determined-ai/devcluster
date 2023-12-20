@@ -157,6 +157,10 @@ def main() -> None:
             p = CONFIG_DIR / (path + ".yaml")
             if not p.exists():
                 print(f"Path {path} does not exist", file=sys.stderr)
+                print("Available configs:")
+                for f in CONFIG_DIR.iterdir():
+                    if f.is_file():
+                        print(f"  {f.stem}")
                 sys.exit(1)
             print(f"expaned {path} to {p}")
         return p
