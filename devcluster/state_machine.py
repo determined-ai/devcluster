@@ -443,8 +443,8 @@ class StateMachine:
                 if self.stages[want_restart].running():
                     # Need to shut down before restarting.
                     # This arises if a postcmd has failed but the stage kept running.
-                    if self.stages[self.state].killable():
-                        self.stages[self.state].kill()
+                    if self.stages[want_restart].killable():
+                        self.stages[want_restart].kill()
                 else:
                     self.logger.log(f"resetting stage {want_restart}\n")
                     self.stages[want_restart].reset()
