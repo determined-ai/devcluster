@@ -1,5 +1,6 @@
 import json
 import os
+import signal
 import subprocess
 from typing import Any, Optional
 
@@ -29,16 +30,16 @@ class ProcessTracker:
             json.dump(self.running, f)
         os.rename(tmp_path, path)
 
-    def report_container_started(self, container_id: str) -> None:
-        self.running.append({"container_id": container_id})
+    def report_container_started(self, container_id: str, kill_signal: str) -> None:
+        self.running.append({"container_id": container_id, "kill_signal": kill_signal})
         self._update_file()
 
     def report_container_killed(self, container_id: str) -> None:
         self.running = list(filter(lambda p: p.get("container_id") != container_id, self.running))
         self._update_file()
 
-    def report_pid_started(self, pid: int, match_args: str) -> None:
-        self.running.append({"pid": pid, "match_args": match_args})
+    def report_pid_started(self, pid: int, match_args: str, kill_signal: str) -> None:
+        self.running.append({"pid": pid, "match_args": match_args, "kill_signal": kill_signal})
         self._update_file()
 
     def report_pid_killed(self, pid: int) -> None:
@@ -53,17 +54,20 @@ class ProcessTracker:
             old_processes = json.load(f)
 
         for proc in reversed(old_processes):
+            # Note that kill_signal wasn't written by older versions, so we use .get() with a
+            # default to "SIGKILL" to make the upgrade transparent.
+            kill_signal = proc.get("kill_signal", "SIGKILL")
             if "pid" in proc:
-                msg = recover_process(proc["pid"], proc["match_args"])
+                msg = recover_process(proc["pid"], proc["match_args"], kill_signal)
                 if msg:
                     logger.log(msg)
             if "container_id" in proc:
-                msg = recover_container(proc["container_id"])
+                msg = recover_container(proc["container_id"], kill_signal)
                 if msg:
                     logger.log(msg)
 
 
-def recover_process(pid: int, match_args: str) -> Optional[str]:
+def recover_process(pid: int, match_args: str, kill_signal: str) -> Optional[str]:
     """Detect/kill a dangling process from an earlier devluster."""
     # ps args, formatting, and exit code all tested on mac and linux
     cmd = ["ps", "-p", str(pid), "-o", "command"]
@@ -80,11 +84,12 @@ def recover_process(pid: int, match_args: str) -> Optional[str]:
         return f"chose not to kill pid {pid} whose args don't match '{match_args}'\n"
 
     # Kill the process.
-    os.kill(pid, 9)
-    return f"killed old pid {pid} running '{match_args}'\n"
+    signum = signal.Signals[kill_signal].value
+    os.kill(pid, signum)
+    return f"killed old pid {pid} running '{match_args}' with signal {kill_signal}\n"
 
 
-def recover_container(container_id: str) -> Optional[str]:
+def recover_container(container_id: str, kill_signal: str) -> Optional[str]:
     """Detect/kill a dangling container from an earlier devcluster."""
     cmd = [
         "docker",
@@ -107,7 +112,7 @@ def recover_container(container_id: str) -> Optional[str]:
 
     if state not in ("created", "exited"):
         # Kill container.
-        cmd = ["docker", "kill", container_id]
+        cmd = ["docker", "kill", container_id, "--signal", kill_signal]
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         # Wait for it to exit.

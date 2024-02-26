@@ -240,18 +240,16 @@ class Process(BaseProcess):
         self.poll.register(self.out, dc.Poll.IN_FLAGS, self._handle_out)
         self.poll.register(self.err, dc.Poll.IN_FLAGS, self._handle_err)
 
-        self.process_tracker.report_pid_started(self.proc.pid, " ".join(self.config.cmd))
+        self.process_tracker.report_pid_started(
+            self.proc.pid, " ".join(self.config.cmd), self.config.kill_signal
+        )
 
     def kill(self, sig: Optional[signal.Signals] = None) -> None:
         # kill via signal
         self.dying = True
         assert self.proc
-        if sig is not None:
-            self.proc.send_signal(sig)
-        elif self.config.kill_signal is not None:
-            self.proc.send_signal(signal.Signals[self.config.kill_signal])
-        else:
-            self.proc.kill()
+        sig = sig or signal.Signals[self.config.kill_signal]
+        self.proc.send_signal(sig)
 
 
 class DockerProcess(BaseProcess):
@@ -282,7 +280,9 @@ class DockerProcess(BaseProcess):
         self.docker_started = success
         if success:
             self.container_id = stdout.strip().decode("utf8")
-            self.process_tracker.report_container_started(self.container_id)
+            self.process_tracker.report_container_started(
+                self.container_id, self.config.kill_signal
+            )
 
     def get_precommand(self) -> Optional[dc.AtomicOperation]:
         # Inherit the precmds behavior from Process.
@@ -317,8 +317,9 @@ class DockerProcess(BaseProcess):
 
     def run_command(self) -> None:
         self.dying = False
+        cmd = ["docker", "container", "logs", "-f", self.config.container_name]
         self.proc = subprocess.Popen(
-            ["docker", "container", "logs", "-f", self.config.container_name],
+            cmd,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -336,7 +337,7 @@ class DockerProcess(BaseProcess):
         self.poll.register(self.out, dc.Poll.IN_FLAGS, self._handle_out)
         self.poll.register(self.err, dc.Poll.IN_FLAGS, self._handle_err)
 
-        self.process_tracker.report_pid_started(self.proc.pid, "docker container logs")
+        self.process_tracker.report_pid_started(self.proc.pid, " ".join(cmd), "SIGKILL")
 
     def docker_wait(self, timeout: Optional[float] = None) -> int:
         # Wait for the container.
