@@ -1,4 +1,5 @@
 import os
+import fcntl
 import time
 import subprocess
 import sys
@@ -305,28 +306,46 @@ class Console:
             self.state_machine_handle.quit()
         elif key == "\x04":  # ctrl-d
             self.state_machine_handle.dump_state()
-        elif key == "q":
+        # include escape key
+        elif key == "q" or key == "\033":
             self.state_machine_handle.quit()
-        elif key == "k":
+        # include up arrow and scroll up
+        elif key == "k" or key == "\033[A" or key == "\033OA":
             self.act_scroll(1)
-        elif key == "u":
+        # include page up
+        elif key == "u" or key == "\033[5":
             self.act_scroll(10)
-        elif key == "j":
+        # include down arrow and scroll down
+        elif key == "j" or key == "\033[B" or key == "\033OB":
             self.act_scroll(-1)
-        elif key == "d":
+        # include page down
+        elif key == "d" or key == "\033[6":
             self.act_scroll(-10)
-        elif key == "x":
+        # include end key and enter
+        elif key == "x" or key == "\033[F" or key == "\x0d":
             self.act_scroll_reset()
         elif key == " ":
             self.act_marker()
         else:
+            hexKey = key.encode("utf-8").hex()
+            if key[0] == "\033":
+                # escape sequence
+                key = "\\033" + key[1:]
             self.logger.log(
-                dc.fore_num(9) + dc.asbytes(f'"{key}" is not a known shortcut\n') + dc.res
+                dc.fore_num(9)
+                + dc.asbytes(f'"{key}" is not a known shortcut (0x{hexKey})\n')
+                + dc.res
             )
 
     def handle_stdin(self, ev: int, _: int) -> None:
         if ev & dc.Poll.IN_FLAGS:
             key = sys.stdin.read(1)
+            if key == "\033":
+                # escape sequence, read next 2 characters non-blocking
+                orig_fl = fcntl.fcntl(sys.stdin, fcntl.F_GETFL)
+                fcntl.fcntl(sys.stdin, fcntl.F_SETFL, orig_fl | os.O_NONBLOCK)
+                key += sys.stdin.read(2)
+                fcntl.fcntl(sys.stdin, fcntl.F_SETFL, orig_fl)
             self.handle_key(key)
         elif ev & dc.Poll.ERR_FLAGS:
             raise ValueError("stdin closed!")
