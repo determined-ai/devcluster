@@ -222,10 +222,11 @@ def main() -> None:
         return config_body
 
     config_bodies = [load_config_body(str(path)) for path in config_paths]
-    base_config_body = load_config_body(str(BASE_CONFIG_PATH))
+    # base_config_body = load_config_body(str(BASE_CONFIG_PATH))
     config = dc.Config(
         *[
-            dc.expand_env(conf_body, env) for conf_body in  [base_config_body] + config_bodies
+            # dc.expand_env(conf_body, env) for conf_body in  [base_config_body] + config_bodies
+            dc.expand_env(conf_body, env) for conf_body in  config_bodies
         ]
     )
 
