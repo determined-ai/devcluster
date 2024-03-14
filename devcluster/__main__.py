@@ -117,6 +117,12 @@ def main() -> None:
     else:
         mode = "client"
 
+    blacklist = ["PGSERVICE"] # det binary lib/pq complains.
+    for key in blacklist:
+        if key in os.environ:
+            print(f"Unsetting {key} from environment")
+            del os.environ[key]
+
     # Validate args
     ok = True
     if mode == "client":
