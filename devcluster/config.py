@@ -1,6 +1,7 @@
 import abc
 import re
 import os
+import signal
 import string
 import typing
 import functools
@@ -50,6 +51,18 @@ def check_dict_of_strings(d: Any, msg: str) -> Dict[str, str]:
         assert isinstance(k, str), msg
         assert isinstance(v, str), msg
     return d
+
+
+def read_kill_signal(config: Dict[str, Any], config_kind: str) -> str:
+    s = config.get("kill_signal", "SIGKILL")
+    msg = (
+        f"{config_kind}.kill_signal must be a valid signal name, like "
+        f"'KILL' or 'SIGKILL', not '{s}'"
+    )
+    assert isinstance(s, str), msg
+    s = s if s.startswith("SIG") else "SIG" + s
+    assert s in signal.Signals.__members__, msg
+    return s
 
 
 def read_path(path: Optional[str]) -> Optional[str]:
@@ -318,7 +331,7 @@ class MasterConfig(StageConfig):
         self.name = config.get("name", "master")
         self.temp_dir = temp_dir
 
-        self.kill_signal = config.get("kill_signal", None)
+        self.kill_signal = read_kill_signal(config, "MasterConfig")
 
     def build_stage(
         self,
@@ -369,7 +382,7 @@ class AgentConfig(StageConfig):
         self.name = config.get("name", "agent")
         self.temp_dir = temp_dir
 
-        self.kill_signal = config.get("kill_signal", None)
+        self.kill_signal = read_kill_signal(config, "AgentConfig")
 
     def build_stage(
         self,
@@ -465,8 +478,6 @@ class CustomConfig(StageConfig):
 
         self.name = check_string(config["name"], "CustomConfig.name must be a string")
 
-        self.kill_signal = config.get("kill_signal", None)
-
         self.env = config.get("env", {})
         check_dict_with_string_keys(self.env, "CustomConfig.pre must be a list of dicts")
 
@@ -479,6 +490,8 @@ class CustomConfig(StageConfig):
 
         check_list_of_dicts(config.get("post", []), "CustomConfig.post must be a list of dicts")
         self.post = [AtomicConfig.read(post) for post in config.get("post", [])]
+
+        self.kill_signal = read_kill_signal(config, "CustomConfig")
 
     def build_stage(
         self,
@@ -504,8 +517,7 @@ class CustomDockerConfig(StageConfig):
             self.run_args, "CustomDockerConfig.run_args must be a list of strings"
         )
 
-        self.kill_signal = config.get("kill_signal", "KILL")
-        assert isinstance(self.kill_signal, str), "CustomDockerConfig.kill_signal must be a string"
+        self.kill_signal = read_kill_signal(config, "CustomDockerConfig")
 
         self.name = config["name"]
         assert isinstance(self.name, str), "CustomDockerConfig.name must be a string"
