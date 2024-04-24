@@ -55,7 +55,7 @@ def get_host_addr_for_docker() -> Optional[str]:
     if "darwin" in sys.platform:
         # On macOS, docker runs in a VM and host.docker.internal points to the IP
         # address of this VM.
-        return "host.docker.internal"
+        return os.getenv("DOCKER_LOCALHOST", "host.docker.internal")
 
     # On non-macOS, host.docker.internal does not exist. Instead, grab the source IP
     # address we would use if we had to talk to the internet. The sed command
