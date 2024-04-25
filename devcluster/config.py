@@ -569,7 +569,8 @@ def deep_merge(obj1: T, obj2: T, predicate) -> T:
 def deep_merge_dict(dict1, dict2, predicate):
     result = dict1.copy()
     for key, value in dict2.items():
-        if key in dict1:
+        override_no_merge = ["resource_manager"]
+        if key in dict1 and not key in override_no_merge:
             result[key] = deep_merge(dict1[key], value, predicate)
         else:
             result[key] = value
@@ -588,18 +589,19 @@ def deep_merge_list(list1, list2, predicate):
 
 
 def deep_merge_configs(configs: typing.List[dict]) -> typing.Dict:
-    def should_merge(d1: dict, d2: dict) -> bool:
+    def should_merge(base: dict, override: dict) -> bool:
+        """compare same level keys"""
         # is a stage
-        if d1.keys() == d2.keys() and len(d1.keys()) == 1:
+        if base.keys() == override.keys() and len(base.keys()) == 1:
             return True
 
         # is a rp
-        if d1.get("pool_name") is not None and d1.get("pool_name") == d2.get("pool_name"):
+        if base.get("pool_name") is not None and base.get("pool_name") == override.get("pool_name"):
             return True
 
         return False
 
-    return functools.reduce(lambda x, y: deep_merge(x, y, should_merge), configs)
+    return functools.reduce(lambda base, override: deep_merge(base, override, should_merge), configs)
 
 
 class Config:
@@ -607,6 +609,8 @@ class Config:
         assert len(configs) > 0, "must provide at least one config"
         if len(configs) > 1:
             config = deep_merge_configs(list(configs))
+            print("merged config:")
+            print(yaml.dump(config))
         else:
             config = configs[0]
         assert isinstance(config, dict), "config must be a dict"
