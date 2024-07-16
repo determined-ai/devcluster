@@ -159,7 +159,8 @@ def main() -> None:
         if the path doesn't exist try to match it with a known config name.
         """
         p = pathlib.Path(path)
-        if not p.exists():
+        # TODO: check if it looks like a config.
+        if not p.exists() or not p.is_file():
             p = CONFIG_DIR / (path + ".yaml")
             if not p.exists():
                 print(f"Path {path} does not exist", file=sys.stderr)
