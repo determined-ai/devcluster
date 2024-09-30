@@ -258,7 +258,7 @@ class DBConfig(StageConfig):
         self.container_name = str(config.get("container_name", "determined_db"))
         self.data_dir = read_path(config.get("data_dir"))
         self.name = str(config.get("name", "db"))
-        self.image_name = str(config.get("image_name", "postgres:10.14"))
+        self.image_name = str(config.get("image_name", "postgres:14.13"))
         self.post = config.get("post", [{"logcheck": {"regex": "listening on IP"}}])
 
         check_list_of_strings(
