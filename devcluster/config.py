@@ -479,7 +479,7 @@ class CustomConfig(StageConfig):
         self.name = check_string(config["name"], "CustomConfig.name must be a string")
 
         self.env = config.get("env", {})
-        check_dict_with_string_keys(self.env, "CustomConfig.pre must be a list of dicts")
+        check_dict_with_string_keys(self.env, "CustomConfig.env must be dictionary")
 
         self.cwd = read_path(config.get("cwd"))
         if self.cwd is not None:
