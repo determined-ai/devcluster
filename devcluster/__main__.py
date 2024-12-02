@@ -2,18 +2,21 @@
 
 import argparse
 import contextlib
+import pathlib
 import fcntl
 import os
 import subprocess
 import re
 import sys
-from typing import Iterator, no_type_check, Optional, Sequence
+from typing import Iterator, List, no_type_check, Optional, Sequence
 
 import appdirs
 import yaml
 
 import devcluster as dc
 
+CONFIG_DIR = pathlib.Path(os.path.expanduser("~/.config/devcluster"))
+BASE_CONFIG_PATH = CONFIG_DIR / "_base.yaml"
 
 # prefer stdlib importlib.resources over pkg_resources, when available
 @no_type_check
@@ -52,7 +55,7 @@ def get_host_addr_for_docker() -> Optional[str]:
     if "darwin" in sys.platform:
         # On macOS, docker runs in a VM and host.docker.internal points to the IP
         # address of this VM.
-        return "host.docker.internal"
+        return os.getenv("DOCKER_LOCALHOST", "host.docker.internal")
 
     # On non-macOS, host.docker.internal does not exist. Instead, grab the source IP
     # address we would use if we had to talk to the internet. The sed command
@@ -98,7 +101,7 @@ def maybe_install_default_config() -> Optional[str]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("-c", "--config", dest="config", action="store")
+    parser.add_argument("-c", "--config", dest="config", action="store", nargs='+', help="Provide one or more config files")
     parser.add_argument("-1", "--oneshot", dest="oneshot", action="store_true")
     parser.add_argument("-q", "--quiet", dest="quiet", action="store_true")
     parser.add_argument("-C", "--cwd", dest="cwd", action="store")
@@ -113,6 +116,12 @@ def main() -> None:
         mode = "server"
     else:
         mode = "client"
+
+    blacklist = ["PGSERVICE"] # det binary lib/pq complains.
+    for key in blacklist:
+        if key in os.environ:
+            print(f"Unsetting {key} from environment")
+            del os.environ[key]
 
     # Validate args
     ok = True
@@ -145,9 +154,30 @@ def main() -> None:
     if not ok:
         sys.exit(1)
 
+    def expand_path(path: str) -> pathlib.Path:
+        """
+        if the path doesn't exist try to match it with a known config name.
+        """
+        p = pathlib.Path(path)
+        # TODO: check if it looks like a config.
+        if not p.exists() or not p.is_file():
+            p = CONFIG_DIR / (path + ".yaml")
+            if not p.exists():
+                print(f"Path {path} does not exist", file=sys.stderr)
+                print("Available configs:")
+                for f in CONFIG_DIR.iterdir():
+                    if f.is_file():
+                        print(f"  {f.stem}")
+                sys.exit(1)
+            print(f"expaned {path} to {p}")
+        return p
+
+
     # Read config before the cwd.
+    config_paths: List[pathlib.Path] = []
     if args.config is not None:
-        config_path = args.config
+        for path in args.config:
+            config_paths.append(expand_path(path))
     else:
         check_paths = []
         # Always support ~/.devcluster.yaml
@@ -184,18 +214,29 @@ def main() -> None:
             sys.exit(1)
         env["DOCKER_LOCALHOST"] = docker_localhost
 
-    with open(config_path) as f:
-        config_body = yaml.safe_load(f.read())
-        if config_body is None:
-            print(f"config file '{config_path}' is an empty file!", file=sys.stderr)
-            sys.exit(1)
-        if not isinstance(config_body, dict):
-            print(
-                f"config file '{config_path}' does not represent a dict!",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        config = dc.Config(dc.expand_env(config_body, env))
+    def load_config_body(path: str) -> dict:
+        with open(path) as f:
+            config_body = yaml.safe_load(f.read())
+            if config_body is None:
+                print(f"config file '{path}' is an empty file!", file=sys.stderr)
+                sys.exit(1)
+            if not isinstance(config_body, dict):
+                print(
+                    f"config file '{path}' does not represent a dict!",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        return config_body
+
+    config_bodies = [load_config_body(str(path)) for path in config_paths]
+    # base_config_body = load_config_body(str(BASE_CONFIG_PATH))
+    config = dc.Config(
+        *[
+            # dc.expand_env(conf_body, env) for conf_body in  [base_config_body] + config_bodies
+            dc.expand_env(conf_body, env) for conf_body in  config_bodies
+        ]
+    )
+
 
     # Process cwd.
     cwd_path = None
