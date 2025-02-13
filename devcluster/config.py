@@ -170,16 +170,19 @@ class ElasticConfig(StageConfig):
         self.elastic_port = int(config.get("elastic_port", 9300))
 
         self.environment = check_dict_of_strings(
-            config.get(
+            {
+                "discovery.type": "single-node",
+                "cluster.routing.allocation.disk.threshold_enabled": "false",
+                "logger.level": "WARN",
+                "ingest.geoip.downloader.enabled": "false",
+            }
+            | config.get(
                 "environment",
-                {
-                    "discovery.type": "single-node",
-                    "cluster.routing.allocation.disk.threshold_enabled": "false",
-                    "logger.level": "WARN",
-                },
+                {},
             ),
             "ElasticConfig.environment must be a dict of strings to strings",
         )
+
         self.data_dir = read_path(config.get("data_dir"))
         self.container_name = str(config.get("container_name", "determined_elastic"))
         self.name = str(config.get("name", "elastic"))
