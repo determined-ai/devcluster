@@ -51,7 +51,8 @@ class Command:
         if ev & dc.Poll.ERR_FLAGS:
             self.poll.unregister(self._handle_out)
             # even though we stole the underlying fd, close the whole reader
-            self.p.stdout.close()
+            if self.p.stdout is not None:
+                self.p.stdout.close()
             self.out = None
             self._maybe_wait()
 
@@ -62,7 +63,8 @@ class Command:
         if ev & dc.Poll.ERR_FLAGS:
             self.poll.unregister(self._handle_err)
             # even though we stole the underlying fd, close the whole reader
-            self.p.stderr.close()
+            if self.p.stderr is not None:
+                self.p.stderr.close()
             self.err = None
             self._maybe_wait()
 

@@ -208,7 +208,8 @@ class AtomicSubprocess(AtomicOperation):
         if ev & dc.Poll.ERR_FLAGS:
             self.poll.unregister(self._handle_out)
             # even though we stole the underlying fd, close the whole reader
-            self.proc.stdout.close()
+            if self.proc and self.proc.stdout:
+                self.proc.stdout.close()
             self.out = None
             self._maybe_wait()
 
@@ -219,7 +220,8 @@ class AtomicSubprocess(AtomicOperation):
         if ev & dc.Poll.ERR_FLAGS:
             self.poll.unregister(self._handle_err)
             # even though we stole the underlying fd, close the whole reader
-            self.proc.stderr.close()
+            if self.proc and self.proc.stderr:
+                self.proc.stderr.close()
             self.err = None
             self._maybe_wait()
 

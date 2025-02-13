@@ -198,7 +198,6 @@ class ElasticConfig(StageConfig):
         state_machine: "dc.StateMachine",
         process_tracker: "dc.ProcessTracker",
     ) -> "dc.Stage":
-
         if self.data_dir:
             # elastic is gonna have a bad day if this directory doesn't exist yet.
             try:
@@ -273,7 +272,6 @@ class DBConfig(StageConfig):
         state_machine: "dc.StateMachine",
         process_tracker: "dc.ProcessTracker",
     ) -> "dc.Stage":
-
         if self.data_dir:
             run_args = ["-v", f"{self.data_dir}:/var/lib/postgresql/data"]
         else:
