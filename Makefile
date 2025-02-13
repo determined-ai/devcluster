@@ -23,6 +23,10 @@ build:
 	$(MAKE) clean
 	python3 setup.py -q sdist bdist_wheel
 
+.PHONY: install
+install: build
+	pip3 install --force-reinstall dist/*.whl
+
 .PHONY: publish
 publish: build
 	twine check dist/*
