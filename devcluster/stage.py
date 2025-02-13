@@ -142,7 +142,9 @@ class BaseProcess(Stage, metaclass=abc.ABCMeta):
             self.logger.log(os.read(self.out, 4096), self.log_name())
         if ev & dc.Poll.ERR_FLAGS:
             self.poll.unregister(self._handle_out)
-            os.close(self.out)
+            # even though we stole the underlying fd, close the whole reader
+            if self.proc and self.proc.stdout:
+                self.proc.stdout.close()
             self.out = None
             self._maybe_wait()
 
@@ -152,7 +154,9 @@ class BaseProcess(Stage, metaclass=abc.ABCMeta):
             self.logger.log(os.read(self.err, 4096), self.log_name())
         if ev & dc.Poll.ERR_FLAGS:
             self.poll.unregister(self._handle_err)
-            os.close(self.err)
+            # even though we stole the underlying fd, close the whole reader
+            if self.proc and self.proc.stderr:
+                self.proc.stderr.close()
             self.err = None
             self._maybe_wait()
 

@@ -50,7 +50,9 @@ class Command:
             self.logger.log(os.read(self.out, 4096))
         if ev & dc.Poll.ERR_FLAGS:
             self.poll.unregister(self._handle_out)
-            os.close(self.out)
+            # even though we stole the underlying fd, close the whole reader
+            if self.p.stdout is not None:
+                self.p.stdout.close()
             self.out = None
             self._maybe_wait()
 
@@ -60,7 +62,9 @@ class Command:
             self.logger.log(os.read(self.err, 4096))
         if ev & dc.Poll.ERR_FLAGS:
             self.poll.unregister(self._handle_err)
-            os.close(self.err)
+            # even though we stole the underlying fd, close the whole reader
+            if self.p.stderr is not None:
+                self.p.stderr.close()
             self.err = None
             self._maybe_wait()
 
